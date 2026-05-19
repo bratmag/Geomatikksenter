@@ -7,7 +7,7 @@
     TOKEN_WAIT_MS: 30000,
     PROXY_URL: "/.netlify/functions/tc-proxy",
     APP_TITLE: "Geomatikksenter",
-    APP_BUILD: "20260519-data-tabs",
+    APP_BUILD: "20260519-project-explorer",
     JXL_ECEF_NN2000_GEOID_OFFSET_M: 40.3703,
     AUTO_CONVERT_ON_OPEN: false,
     IFC_POINT_OBJECT_HEIGHT_M: 1,
@@ -262,6 +262,7 @@
     btnRow.appendChild(stopBtn);
     btnRow.appendChild(convertManualBtn);
     btnRow.appendChild(localUploadBtn);
+    btnRow.appendChild(projectUploadBtn);
     btnRow.appendChild(localFileInput);
     filesCard.appendChild(btnRow);
 
@@ -282,11 +283,10 @@
     jxlCard.appendChild(jxlHeader);
     const jxlBtnRow = el("div", "btn-row");
     const jxlRefreshBtn = el("button", "primary", "Oppdater feltdata");
-    const jxlConvertBtn = el("button", null, "Konverter valgt JXL");
+    const jxlConvertBtn = el("button", null, "Konverter valgt JXL til IFC");
     jxlConvertBtn.disabled = true;
     jxlBtnRow.appendChild(jxlRefreshBtn);
     jxlBtnRow.appendChild(jxlConvertBtn);
-    jxlBtnRow.appendChild(projectUploadBtn);
     jxlCard.appendChild(jxlBtnRow);
     const jxlList = el("div", "file-list");
     jxlCard.appendChild(jxlList);
