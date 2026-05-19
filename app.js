@@ -7,9 +7,9 @@
     TOKEN_WAIT_MS: 30000,
     PROXY_URL: "/.netlify/functions/tc-proxy",
     APP_TITLE: "Geomatikksenter",
-    APP_BUILD: "20260519-fielddata-attachments",
+    APP_BUILD: "20260519-data-tabs",
     JXL_ECEF_NN2000_GEOID_OFFSET_M: 40.3703,
-    AUTO_CONVERT_ON_OPEN: true,
+    AUTO_CONVERT_ON_OPEN: false,
     IFC_POINT_OBJECT_HEIGHT_M: 1,
     IFC_FALLBACK_LINE_RADIUS_M: 0.05,
     IFC_REFERENCE_LINE_RADIUS_M: 0.015,
@@ -24,7 +24,7 @@
     project: null,
     selectedFile: null,
     fileList: [],
-    activeView: "converter",
+    activeView: "project",
     jxlSources: [],
     selectedJxlSource: null,
     tokenWaiters: [],
@@ -33,7 +33,7 @@
     busy: false,
     conversionInProgress: false,
     cancelConversionRequested: false,
-    manualSelectionMode: false,
+    manualSelectionMode: true,
     manualSelectedFileIds: new Set(),
     explorerApi: null,
     explorerVisible: false,
@@ -75,7 +75,7 @@
   function setBusy(busy) {
     state.busy = busy;
     if (ui.refreshBtn) {
-      ui.refreshBtn.textContent = state.manualSelectionMode ? "Oppdater liste" : "Oppdater og konverter";
+      ui.refreshBtn.textContent = "Oppdater prosjektdata";
       ui.refreshBtn.disabled = busy;
     }
     if (ui.stopBtn) {
@@ -90,6 +90,7 @@
     if (ui.jxlRefreshBtn) ui.jxlRefreshBtn.disabled = busy;
     if (ui.jxlConvertBtn) ui.jxlConvertBtn.disabled = busy || !state.selectedJxlSource;
     if (ui.projectUploadBtn) ui.projectUploadBtn.disabled = busy || !canOpenProjectUpload();
+    if (ui.deliveryRunBtn) ui.deliveryRunBtn.disabled = true;
   }
 
   function shortText(text, len = 1500) {
@@ -220,12 +221,13 @@
     titleCard.appendChild(el("div", "card-header", [
       el("h2", null, CONFIG.APP_TITLE)
     ]));
-    titleCard.appendChild(el("div", "subtitle", "KOF/SOSI/GML konverteres automatisk. Avanserte verktøy ligger ett klikk unna."));
+    titleCard.appendChild(el("div", "subtitle", "Verktøy for feltdata, prosjektdata og digitale dataleveranser."));
 
     const tabsCard = el("div", "card tabs-card");
-    const converterTabBtn = el("button", "primary", "KOF-konvertering");
-    const jxlTabBtn = el("button", null, "Avanserte verktøy");
-    tabsCard.appendChild(el("div", "btn-row", [converterTabBtn, jxlTabBtn]));
+    const projectTabBtn = el("button", "primary", "Prosjektdata");
+    const fieldTabBtn = el("button", null, "Feltdata");
+    const deliveryTabBtn = el("button", null, "Dataleveranse");
+    tabsCard.appendChild(el("div", "btn-row", [projectTabBtn, fieldTabBtn, deliveryTabBtn]));
 
     const projectCard = el("div", "card");
     projectCard.appendChild(el("div", "label", "Prosjekt"));
@@ -235,7 +237,8 @@
     const filesCard = el("div", "card");
     const filesHeader = el("div", "card-header", [
       el("div", null, [
-        el("div", "label", "KOF/SOSI/GML-filer")
+        el("div", "label", "Prosjektdata"),
+        el("div", "subtitle", "Filer i Trimble Connect-prosjektet.")
       ])
     ]);
     const fileCount = el("div", "file-count", "");
@@ -243,7 +246,7 @@
     filesCard.appendChild(filesHeader);
 
     const btnRow = el("div", "btn-row");
-    const refreshBtn = el("button", "primary", "Oppdater og konverter");
+    const refreshBtn = el("button", "primary", "Oppdater prosjektdata");
     const stopBtn = el("button", "danger", "Stopp konvertering");
     const convertManualBtn = el("button", "primary", "Konverter valgte");
     const localUploadBtn = el("button", null, "Konverter lokal fil");
@@ -253,7 +256,7 @@
     localFileInput.accept = ".kof,.sos,.sosi,.gml,.jxl,text/plain,application/gml+xml,application/xml";
     localFileInput.style.display = "none";
     stopBtn.style.display = "none";
-    convertManualBtn.style.display = "none";
+    convertManualBtn.style.display = "";
     projectUploadBtn.disabled = true;
     btnRow.appendChild(refreshBtn);
     btnRow.appendChild(stopBtn);
@@ -270,15 +273,15 @@
     jxlCard.style.display = "none";
     const jxlHeader = el("div", "card-header", [
       el("div", null, [
-        el("div", "label", "Avanserte verktøy"),
-        el("div", "subtitle", "Manuell JXL til IFC fra Connect Explorer og Field Data.")
+        el("div", "label", "Feltdata"),
+        el("div", "subtitle", "JXL-eksporter fra Field Data og målebok.")
       ])
     ]);
     const jxlCount = el("div", "file-count", "");
     jxlHeader.appendChild(jxlCount);
     jxlCard.appendChild(jxlHeader);
     const jxlBtnRow = el("div", "btn-row");
-    const jxlRefreshBtn = el("button", "primary", "Oppdater JXL-liste");
+    const jxlRefreshBtn = el("button", "primary", "Oppdater feltdata");
     const jxlConvertBtn = el("button", null, "Konverter valgt JXL");
     jxlConvertBtn.disabled = true;
     jxlBtnRow.appendChild(jxlRefreshBtn);
@@ -287,6 +290,37 @@
     jxlCard.appendChild(jxlBtnRow);
     const jxlList = el("div", "file-list");
     jxlCard.appendChild(jxlList);
+
+    const deliveryCard = el("div", "card");
+    deliveryCard.style.display = "none";
+    const deliveryHeader = el("div", "card-header", [
+      el("div", null, [
+        el("div", "label", "Dataleveranse"),
+        el("div", "subtitle", "Mottakerstyrte leveranseprofiler.")
+      ])
+    ]);
+    deliveryCard.appendChild(deliveryHeader);
+    const deliveryProfiles = el("div", "file-list");
+    deliveryProfiles.appendChild(el("label", "file-item pending selected", [
+      el("div", "file-info", [
+        el("div", "file-name", "Lede SOSI"),
+        el("div", "file-meta", "SOSI-leveranse med mottakerstruktur")
+      ]),
+      el("span", "file-status pending", "Planlagt")
+    ]));
+    deliveryProfiles.appendChild(el("label", "file-item pending", [
+      el("div", "file-info", [
+        el("div", "file-name", "Gemini VA GML"),
+        el("div", "file-meta", "GML-leveranse mot VA-skjema")
+      ]),
+      el("span", "file-status pending", "Planlagt")
+    ]));
+    deliveryCard.appendChild(deliveryProfiles);
+    const deliveryBtnRow = el("div", "btn-row");
+    const deliveryRunBtn = el("button", null, "Klargjør leveranse");
+    deliveryRunBtn.disabled = true;
+    deliveryBtnRow.appendChild(deliveryRunBtn);
+    deliveryCard.appendChild(deliveryBtnRow);
 
     const explorerCard = el("div", "card embed-card");
     explorerCard.style.display = "none";
@@ -329,13 +363,15 @@
     app.appendChild(statusCard);
     app.appendChild(filesCard);
     app.appendChild(jxlCard);
+    app.appendChild(deliveryCard);
     app.appendChild(explorerCard);
     app.appendChild(debugDetails);
 
     ui = {
       projectValue,
-      converterTabBtn,
-      jxlTabBtn,
+      projectTabBtn,
+      fieldTabBtn,
+      deliveryTabBtn,
       fileCount,
       refreshBtn,
       stopBtn,
@@ -350,6 +386,8 @@
       jxlConvertBtn,
       jxlList,
       filesCard,
+      deliveryCard,
+      deliveryRunBtn,
       explorerCard,
       closeExplorerBtn,
       explorerTarget,
@@ -359,7 +397,6 @@
       debugOutput
     };
   }
-
   function el(tag, className, content) {
     const e = document.createElement(tag);
     if (className) e.className = className;
@@ -381,7 +418,7 @@
       : "";
 
     if (!state.fileList.length) {
-      const empty = el("div", "empty-state", "Trykk \"Oppdater liste\" for å hente KOF/SOSI/GML-filer fra prosjektet.");
+      const empty = el("div", "empty-state", "Trykk \"Oppdater prosjektdata\" for å hente filer fra prosjektet.");
       ui.fileList.appendChild(empty);
       return;
     }
@@ -422,11 +459,17 @@
   }
 
   function switchView(view) {
-    state.activeView = view === "jxl" ? "jxl" : "converter";
-    if (ui.filesCard) ui.filesCard.style.display = state.activeView === "converter" ? "" : "none";
-    if (ui.jxlCard) ui.jxlCard.style.display = state.activeView === "jxl" ? "" : "none";
-    if (ui.converterTabBtn) ui.converterTabBtn.className = state.activeView === "converter" ? "primary" : "";
-    if (ui.jxlTabBtn) ui.jxlTabBtn.className = state.activeView === "jxl" ? "primary" : "";
+    state.activeView = view === "field" || view === "jxl"
+      ? "field"
+      : view === "delivery"
+        ? "delivery"
+        : "project";
+    if (ui.filesCard) ui.filesCard.style.display = state.activeView === "project" ? "" : "none";
+    if (ui.jxlCard) ui.jxlCard.style.display = state.activeView === "field" ? "" : "none";
+    if (ui.deliveryCard) ui.deliveryCard.style.display = state.activeView === "delivery" ? "" : "none";
+    if (ui.projectTabBtn) ui.projectTabBtn.className = state.activeView === "project" ? "primary" : "";
+    if (ui.fieldTabBtn) ui.fieldTabBtn.className = state.activeView === "field" ? "primary" : "";
+    if (ui.deliveryTabBtn) ui.deliveryTabBtn.className = state.activeView === "delivery" ? "primary" : "";
     setBusy(state.busy);
   }
 
@@ -438,7 +481,7 @@
       : "";
 
     if (!state.jxlSources.length) {
-      ui.jxlList.appendChild(el("div", "empty-state", "Trykk \"Oppdater JXL-liste\" for å hente JXL fra Connect Explorer og Field Data."));
+      ui.jxlList.appendChild(el("div", "empty-state", "Trykk \"Oppdater feltdata\" for å hente JXL fra Field Data."));
       setBusy(state.busy);
       return;
     }
@@ -2819,7 +2862,7 @@
       setBusy(true);
       showHint(null, false);
       await ensureReady();
-      setStatus("Henter KOF/SOSI/GML-filer fra prosjektet...", "working");
+      setStatus("Henter prosjektdata...", "working");
 
       let proxyRes = null;
       let result = null;
@@ -2861,14 +2904,14 @@
       renderFileList();
 
       if (state.fileList.length === 0) {
-        setStatus("Ingen KOF/SOSI/GML-filer funnet i prosjektet", "neutral");
+        setStatus("Ingen konverterbare prosjektfiler funnet", "neutral");
       } else {
         const pendingCount = getPendingKofFiles().length;
         const convertedCount = state.fileList.length - pendingCount;
         const suffix = convertedCount
           ? `, ${pendingCount} mangler konvertering`
           : "";
-        setStatus(`Fant ${state.fileList.length} KOF/SOSI/GML-fil${state.fileList.length === 1 ? "" : "er"}${suffix}`, "success");
+        setStatus(`Fant ${state.fileList.length} prosjektfil${state.fileList.length === 1 ? "" : "er"}${suffix}`, "success");
       }
 
       const pendingFiles = getPendingKofFiles();
@@ -2925,7 +2968,7 @@
 
     state.autoConvertInProgress = true;
     try {
-      setStatus(`Starter automatisk konvertering av ${pendingFiles.length} KOF/SOSI/GML-fil${pendingFiles.length === 1 ? "" : "er"}...`, "working");
+      setStatus(`Starter automatisk konvertering av ${pendingFiles.length} prosjektfil${pendingFiles.length === 1 ? "" : "er"}...`, "working");
       await processAllFiles({ source: "auto-open", files: pendingFiles });
     } finally {
       state.autoConvertInProgress = false;
@@ -3014,7 +3057,7 @@
   async function processManualSelectedFiles() {
     const selectedFiles = state.fileList.filter((file) => state.manualSelectedFileIds.has(file.id));
     if (!selectedFiles.length) {
-      setStatus("Velg minst en KOF/SOSI/GML-fil først", "error");
+      setStatus("Velg minst en prosjektfil først", "error");
       return;
     }
     await processAllFiles({ source: "manual-selected", files: selectedFiles, skipExisting: false });
@@ -3215,7 +3258,7 @@
       const skippedCount = candidateFiles.length - filesToProcess.length;
 
       if (!filesToProcess.length) {
-        setStatus("Alle KOF/SOSI/GML-filer har allerede en konvertert fil i samme mappe", "success");
+        setStatus("Alle valgte prosjektfiler har allerede en konvertert fil i samme mappe", "success");
         showHint("Ingen filer ble konvertert pÃ¥ nytt. Slett eksisterende TXT/XML/IFC i Trimble Connect hvis du vil tvinge en ny konvertering.");
         setDebug({
           action: options.source === "auto-open" ? "autoConvertAllOnOpen" : "convertAll",
@@ -3306,7 +3349,7 @@
           setStatus(`Ferdig! ${okCount} fil${okCount === 1 ? "" : "er"} konvertert og lastet opp${skippedCount ? ` (${skippedCount} hoppet over)` : ""}`, "success");
           showHint(
             skippedCount
-              ? `Alle nye filer ble lastet opp. ${skippedCount} KOF/SOSI/GML-fil${skippedCount === 1 ? "" : "er"} hadde allerede TXT/XML/IFC i samme mappe og ble ikke konvertert pÃ¥ nytt.`
+              ? `Alle nye filer ble lastet opp. ${skippedCount} prosjektfil${skippedCount === 1 ? "" : "er"} hadde allerede TXT/XML/IFC i samme mappe og ble ikke konvertert pÃ¥ nytt.`
               : "Alle konverterte filer ble automatisk lastet opp tilbake til samme prosjektmapper i Trimble Connect."
           );
         } else {
@@ -3433,11 +3476,12 @@
   }
 
   function wireUi() {
-    ui.converterTabBtn.addEventListener("click", () => switchView("converter"));
-    ui.jxlTabBtn.addEventListener("click", () => {
-      switchView("jxl");
+    ui.projectTabBtn.addEventListener("click", () => switchView("project"));
+    ui.fieldTabBtn.addEventListener("click", () => {
+      switchView("field");
       if (!state.jxlSources.length) refreshJxlSources().catch(() => {});
     });
+    ui.deliveryTabBtn.addEventListener("click", () => switchView("delivery"));
     ui.refreshBtn.addEventListener("click", () => refreshKofListOnOpen("manual-refresh"));
     ui.stopBtn.addEventListener("click", requestStopConversion);
     ui.convertManualBtn.addEventListener("click", processManualSelectedFiles);
@@ -3455,7 +3499,7 @@
       wireUi();
       renderFileList();
       renderJxlList();
-      switchView("converter");
+      switchView("project");
 
       setStatus("Starter...", "working");
       await connectWorkspace();
