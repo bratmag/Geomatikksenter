@@ -1522,7 +1522,7 @@
     if (!kumform || (widthM == null && lengthM == null)) return null;
 
     const thkM = pointThicknessToMeters(getIfcProp(props, ["Tykkelse"]));
-    const insideOutside = normalizeIfcToken(getIfcProp(props, ["InnvendigUtvendig"]));
+    const insideOutside = normalizeIfcToken(getIfcProp(props, ["InnvendigUtvendig", "ID/OD", "IDOD"]));
     const usesInside = insideOutside.startsWith("ID") || insideOutside.includes("INNVENDIG");
     const shape = kumform.startsWith("R") ? "circle" : "rect";
     const baseWidthM = Math.max(0, widthM ?? lengthM ?? 0);
@@ -1561,12 +1561,12 @@
   }
 
   function getIfcPointObjectBaseZ(props, measuredZ, heightM) {
-    const reference = normalizeIfcToken(getIfcProp(props, ["Høydereferanse", "Hoydereferanse"]));
+    const reference = getIfcHeightReference(props);
     const slabValue = firstNumber(getIfcProp(props, ["Avst_BunnInnvUnderUtv"])) || 0;
     const slabM = slabValue > 5 ? slabValue / 100 : slabValue;
     if (reference.includes("TOPP") || reference.includes("OVERKANT")) return measuredZ - heightM;
     if (reference.includes("SENTER")) return measuredZ - heightM / 2;
-    if (reference.includes("BUNN_INNVENDIG")) return measuredZ - slabM;
+    if (ifcTokenIncludesAny(reference, ["BUNN_INNVENDIG"])) return measuredZ - slabM;
     return measuredZ;
   }
 
@@ -1575,7 +1575,7 @@
     if (dimMm == null || dimMm <= 0) return null;
     const thkMm = firstNumber(getIfcProp(props, ["Tykkelse"])) || 0;
     const verticalDimMm = firstNumber(getIfcProp(props, ["VertikalDimensjon", "Vertikal dimensjon"]));
-    const insideOutside = String(getIfcProp(props, ["InnvendigUtvendig"]) || "").toUpperCase();
+    const insideOutside = normalizeIfcToken(getIfcProp(props, ["InnvendigUtvendig", "ID/OD", "IDOD"]));
     const usesInsideDiameter = insideOutside.startsWith("ID") || insideOutside.includes("INNVENDIG");
     const pipeShape = String(getIfcProp(props, ["Rørform", "Rorform"]) || "").toUpperCase();
     const shapeToken = pipeShape.split(/\s+/)[0];
@@ -1603,15 +1603,28 @@
   }
 
   function getIfcZOffsetToCenter(props, dims) {
-    const reference = String(getIfcProp(props, ["Høydereferanse", "Hoydereferanse"]) || "").toUpperCase();
+    const reference = getIfcHeightReference(props);
     const outerVerticalM = dims.shape === "rect" ? dims.heightM : dims.odM;
     const innerVerticalM = dims.shape === "rect" ? dims.innerHeightM : dims.idM;
-    if (reference.includes("BUNN_INNVENDIG") || reference.includes("UNDERKANT_INNVENDIG")) return innerVerticalM / 2;
-    if (reference.includes("BUNN_UTVENDIG") || reference.includes("UNDERKANT_UTVENDIG")) return outerVerticalM / 2;
-    if (reference.includes("TOPP_INNVENDIG") || reference.includes("OVERKANT_INNVENDIG")) return -innerVerticalM / 2;
-    if (reference.includes("TOPP_UTVENDIG") || reference.includes("OVERKANT_UTVENDIG")) return -outerVerticalM / 2;
+    if (ifcTokenIncludesAny(reference, ["BUNN_INNVENDIG", "UNDERKANT_INNVENDIG"])) return innerVerticalM / 2;
+    if (ifcTokenIncludesAny(reference, ["BUNN_UTVENDIG", "UNDERKANT_UTVENDIG"])) return outerVerticalM / 2;
+    if (ifcTokenIncludesAny(reference, ["TOPP_INNVENDIG", "OVERKANT_INNVENDIG"])) return -innerVerticalM / 2;
+    if (ifcTokenIncludesAny(reference, ["TOPP_UTVENDIG", "OVERKANT_UTVENDIG"])) return -outerVerticalM / 2;
     if (reference.includes("PÅ_BAKKEN") || reference.includes("PA_BAKKEN")) return outerVerticalM / 2;
     return 0;
+  }
+
+  function getIfcHeightReference(props) {
+    return normalizeIfcToken(getIfcProp(props, ["Høydereferanse", "Hoydereferanse", "Målepunkt", "Malepunkt"]));
+  }
+
+  function ifcTokenIncludesAny(value, candidates) {
+    const token = normalizeIfcToken(value);
+    const compactToken = token.replace(/_/g, "");
+    return candidates.some((candidate) => {
+      const normalized = normalizeIfcToken(candidate);
+      return token.includes(normalized) || compactToken.includes(normalized.replace(/_/g, ""));
+    });
   }
 
   function isIfcAnnotationLineCandidate(object) {
