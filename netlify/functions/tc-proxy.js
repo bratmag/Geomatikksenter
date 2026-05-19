@@ -1146,17 +1146,19 @@ async function listFieldDataJxlJobs({ token, projectId }) {
       id: job.id || null,
       name: job.name || null,
       updatedUtc: job.updatedUtc || job.UpdatedUtc || job.updatedOn || job.modifiedOn || null,
-      jxlFileName: job.rootDataFileJxl?.fileName || (job.name ? `${job.name}.jxl` : null),
+      jxlFileName: job.rootDataFileJxl?.fileName || null,
       jxlFileId: job.rootDataFileJxl?.id || null,
-      size: job.rootDataFileJxl?.size || null
+      size: job.rootDataFileJxl?.size || null,
+      rootDataFileJxl: job.rootDataFileJxl || null
     }))
     .filter((job) => job.id);
 
-  return { ok: jobs.length > 0, jobs, diagnostics };
+  const detailedJobs = await enrichFieldDataJxlJobs({ token, projectId, jobs, diagnostics });
+  return { ok: detailedJobs.length > 0, jobs: detailedJobs, diagnostics };
 }
 
 async function handleGetFieldDataJxl(body) {
-  const { token, projectId, projectLocation, jobName, jobTrn } = body;
+  const { token, projectId, projectLocation, jobName, jobTrn, jxlFileId, jxlFileName } = body;
   const wantedName = String(jobName || "JXL to IFC").trim() || "JXL to IFC";
 
   if (!token || !projectId) {
@@ -1211,7 +1213,7 @@ async function handleGetFieldDataJxl(body) {
     });
   }
 
-  const detailUrl = `https://eu.api.maps.trimblegeospatial.com/projects/${encodedProjectId}/surveyjobs/${job.id}?includeAttachments=false`;
+  const detailUrl = `https://eu.api.maps.trimblegeospatial.com/projects/${encodedProjectId}/surveyjobs/${job.id}?includeAttachments=true`;
   const detailRes = await fetchFieldDataJson(detailUrl, token);
   diagnostics.push({
     name: "surveyjob-detail",
@@ -1232,14 +1234,28 @@ async function handleGetFieldDataJxl(body) {
   }
 
   const detail = detailRes.json;
-  const jxlFile = detail.rootDataFileJxl || null;
+  const jxlCandidates = extractFieldDataJxlFiles(detail);
+  const wantedFileName = normalizeFieldDataName(jxlFileName || "");
+  const wantedFileId = jxlFileId ? String(jxlFileId) : "";
+  const jxlFile =
+    (wantedFileId && jxlCandidates.find((file) => String(file.id || "") === wantedFileId)) ||
+    (wantedFileName && jxlCandidates.find((file) => normalizeFieldDataName(file.fileName || "") === wantedFileName)) ||
+    (detail.rootDataFileJxl || null) ||
+    jxlCandidates[0] ||
+    null;
   const downloadUrl = jxlFile?.downloadUrl || null;
   if (!downloadUrl) {
     return jsonResponse(200, {
       ok: false,
       action: "getFieldDataJxl",
-      error: "Jobben mangler rootDataFileJxl.downloadUrl.",
+      error: "Jobben mangler en JXL-fil med downloadUrl.",
       job: summarizeFieldDataJob(detail),
+      jxlCandidates: jxlCandidates.map((file) => ({
+        id: file.id || null,
+        fileName: file.fileName || null,
+        sourceLabel: file.sourceLabel || null,
+        hasDownloadUrl: Boolean(file.downloadUrl)
+      })),
       diagnostics
     });
   }
@@ -1274,8 +1290,9 @@ async function handleGetFieldDataJxl(body) {
     job: summarizeFieldDataJob(detail),
     jxlFile: {
       id: jxlFile.id || null,
-      fileName: jxlFile.fileName || `${wantedName}.jxl`,
+      fileName: jxlFile.fileName || jxlFile.name || `${wantedName}.jxl`,
       size: jxlFile.size || jxlRes.text.length,
+      sourceLabel: jxlFile.sourceLabel || null,
       contentType: jxlRes.contentType
     },
     uploadParentId: uploadParent.parentId,
@@ -1309,10 +1326,10 @@ async function handleListJxlSources(body) {
     })),
     ...fieldData.jobs.map((job) => ({
       sourceType: "field-data",
-      id: job.id,
+      id: job.sourceId || job.id,
       name: job.jxlFileName || job.name || job.id,
-      path: `Field Data${job.name ? ` / ${job.name}` : ""}`,
-      modifiedOn: job.updatedUtc || null,
+      path: `Field Data${job.name ? ` / ${job.name}` : ""}${job.sourceLabel ? ` / ${job.sourceLabel}` : ""}`,
+      modifiedOn: job.jxlUpdatedUtc || job.updatedUtc || null,
       job
     }))
   ].sort((a, b) => String(b.modifiedOn || "").localeCompare(String(a.modifiedOn || "")));
@@ -1630,6 +1647,141 @@ function findExistingConvertedOutputs(file, convertedFiles) {
     (candidate.parentId || null) === parentId &&
     outputBaseName(candidate.name) === fileBase
   );
+}
+
+async function enrichFieldDataJxlJobs({ token, projectId, jobs, diagnostics }) {
+  const encodedProjectId = encodeURIComponent(projectId);
+  const jobsToInspect = jobs.slice(0, 40);
+  const entriesByKey = new Map();
+
+  for (const job of jobs) {
+    if (!job.jxlFileName && !job.rootDataFileJxl) continue;
+    const file = normalizeFieldDataJxlFile(job.rootDataFileJxl || {
+      id: job.jxlFileId,
+      fileName: job.jxlFileName,
+      size: job.size
+    }, "Root JXL");
+    addFieldDataJxlEntry(entriesByKey, job, file);
+  }
+
+  await mapWithConcurrency(jobsToInspect, 4, async (job) => {
+    const detailUrl = `https://eu.api.maps.trimblegeospatial.com/projects/${encodedProjectId}/surveyjobs/${job.id}?includeAttachments=true`;
+    const detailRes = await fetchFieldDataJson(detailUrl, token);
+    diagnostics.push({
+      name: `field-data-jxl-detail:${job.name || job.id}`,
+      url: detailUrl,
+      ok: detailRes.ok,
+      status: detailRes.status,
+      preview: shortText(detailRes.text, 500)
+    });
+    if (!detailRes.ok || !detailRes.json) return;
+
+    const detailJob = {
+      ...job,
+      name: detailRes.json.name || job.name,
+      updatedUtc: detailRes.json.updatedUtc || detailRes.json.UpdatedUtc || job.updatedUtc
+    };
+    for (const file of extractFieldDataJxlFiles(detailRes.json)) {
+      addFieldDataJxlEntry(entriesByKey, detailJob, file);
+    }
+  });
+
+  return Array.from(entriesByKey.values()).sort((a, b) =>
+    String(b.jxlUpdatedUtc || b.updatedUtc || "").localeCompare(String(a.jxlUpdatedUtc || a.updatedUtc || ""))
+  );
+}
+
+async function mapWithConcurrency(items, limit, mapper) {
+  const queue = Array.isArray(items) ? items.slice() : [];
+  const workers = Array.from({ length: Math.max(1, Math.min(limit, queue.length || 1)) }, async () => {
+    while (queue.length) {
+      const item = queue.shift();
+      await mapper(item);
+    }
+  });
+  await Promise.all(workers);
+}
+
+function addFieldDataJxlEntry(entriesByKey, job, file) {
+  if (!job?.id || !file?.fileName) return;
+  const key = `${job.id}|${file.id || ""}|${file.fileName}|${file.downloadUrl || ""}`;
+  if (entriesByKey.has(key)) return;
+  entriesByKey.set(key, {
+    id: job.id,
+    sourceId: `${job.id}:${file.id || file.fileName}`,
+    name: job.name || null,
+    updatedUtc: job.updatedUtc || null,
+    jxlFileName: file.fileName,
+    jxlFileId: file.id || null,
+    jxlUpdatedUtc: file.updatedUtc || null,
+    sourceLabel: file.sourceLabel || null,
+    size: file.size || null
+  });
+}
+
+function extractFieldDataJxlFiles(job) {
+  const out = [];
+  const seen = new Set();
+
+  if (job?.rootDataFileJxl) {
+    addFieldDataJxlFile(out, seen, normalizeFieldDataJxlFile(job.rootDataFileJxl, "Root JXL"));
+  }
+
+  walkFieldDataJxlFiles(job, [], out, seen);
+  return out.sort((a, b) =>
+    String(b.updatedUtc || "").localeCompare(String(a.updatedUtc || "")) ||
+    String(a.fileName || "").localeCompare(String(b.fileName || ""), undefined, { sensitivity: "base" })
+  );
+}
+
+function walkFieldDataJxlFiles(node, pathParts, out, seen) {
+  if (node == null) return;
+  if (Array.isArray(node)) {
+    for (const item of node) walkFieldDataJxlFiles(item, pathParts, out, seen);
+    return;
+  }
+  if (typeof node !== "object") return;
+
+  const file = normalizeFieldDataJxlFile(node, pathParts.join(" / "));
+  addFieldDataJxlFile(out, seen, file);
+
+  for (const [key, value] of Object.entries(node)) {
+    if (value && typeof value === "object") {
+      walkFieldDataJxlFiles(value, pathParts.concat(key), out, seen);
+    }
+  }
+}
+
+function normalizeFieldDataJxlFile(node, sourceLabel) {
+  if (!node || typeof node !== "object") return null;
+  const fileName = node.fileName || node.filename || node.name || node.title || null;
+  if (!/\.jxl$/i.test(String(fileName || ""))) return null;
+
+  const downloadUrl =
+    node.downloadUrl ||
+    node.downloadURL ||
+    node.signedUrl ||
+    node.signedURL ||
+    node.url ||
+    node.href ||
+    null;
+
+  return {
+    id: node.id || node.fileId || node.attachmentId || node.documentId || null,
+    fileName: String(fileName),
+    downloadUrl: downloadUrl ? String(downloadUrl) : null,
+    size: node.size || node.fileSize || node.length || null,
+    updatedUtc: node.updatedUtc || node.UpdatedUtc || node.updatedOn || node.modifiedOn || node.createdUtc || null,
+    sourceLabel: sourceLabel || node.type || node.kind || null
+  };
+}
+
+function addFieldDataJxlFile(out, seen, file) {
+  if (!file?.fileName) return;
+  const key = `${file.id || ""}|${file.fileName}|${file.downloadUrl || ""}`;
+  if (seen.has(key)) return;
+  seen.add(key);
+  out.push(file);
 }
 
 function normalizeFieldDataName(value) {

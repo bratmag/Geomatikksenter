@@ -3026,7 +3026,12 @@
       return;
     }
 
-    await processFieldDataJxl(source.job?.name || source.name || "JXL", source.job?.id || source.id);
+    await processFieldDataJxl(
+      source.job?.name || source.name || "JXL",
+      source.job?.id || source.id,
+      source.job?.jxlFileId || null,
+      source.job?.jxlFileName || source.name || null
+    );
   }
 
   async function processConnectJxlSource(source) {
@@ -3064,7 +3069,7 @@
     }
   }
 
-  async function processFieldDataJxl(jobName = "JXL to IFC", jobTrn = null) {
+  async function processFieldDataJxl(jobName = "JXL to IFC", jobTrn = null, jxlFileId = null, jxlFileName = null) {
     try {
       setBusy(true);
       showHint(null, false);
@@ -3076,7 +3081,9 @@
         projectId: state.project.id,
         projectLocation: state.project.location,
         jobName,
-        jobTrn
+        jobTrn,
+        jxlFileId,
+        jxlFileName
       });
 
       if (!proxyRes.ok || !proxyRes.json) {
