@@ -7,7 +7,7 @@
     TOKEN_WAIT_MS: 30000,
     PROXY_URL: "/.netlify/functions/tc-proxy",
     APP_TITLE: "Geomatikksenter",
-    APP_BUILD: "20260515-jxl-nn2000-ecef",
+    APP_BUILD: "20260519-token-auto-refresh",
     JXL_ECEF_NN2000_GEOID_OFFSET_M: 40.3703,
     AUTO_CONVERT_ON_OPEN: true,
     IFC_POINT_OBJECT_HEIGHT_M: 1,
@@ -45,8 +45,17 @@
 
   let ui = {};
 
+  canonicalizeAppUrl();
+
   function log(...args) { console.log(...args); }
   function debug(...args) { if (CONFIG.DEBUG) console.log(...args); }
+
+  function canonicalizeAppUrl() {
+    if (!window.history?.replaceState) return;
+    if (!window.location.search && !window.location.hash) return;
+    const canonicalUrl = `${window.location.origin}${window.location.pathname}`;
+    window.history.replaceState(null, document.title, canonicalUrl);
+  }
 
   function setStatus(message, kind = "neutral") {
     log(`[STATUS] ${message}`);
@@ -166,6 +175,28 @@
     const waiters = [...state.tokenWaiters];
     state.tokenWaiters = [];
     for (const resolve of waiters) { try { resolve(token); } catch {} }
+  }
+
+  function getCachedAccessToken() {
+    try {
+      const token = window.sessionStorage?.getItem("geomatikksenter.accessToken");
+      return typeof token === "string" && token.length > 20 ? token : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function setAccessToken(token) {
+    if (typeof token !== "string" || !token || token === "pending" || token === "denied") return null;
+    state.accessToken = token;
+    try { window.sessionStorage?.setItem("geomatikksenter.accessToken", token); } catch {}
+    resolveTokenWaiters(token);
+    return token;
+  }
+
+  function clearAccessToken() {
+    state.accessToken = null;
+    try { window.sessionStorage?.removeItem("geomatikksenter.accessToken"); } catch {}
   }
 
   function waitForToken(ms = CONFIG.TOKEN_WAIT_MS) {
@@ -508,6 +539,11 @@
 
   async function requestAccessToken() {
     if (state.accessToken) return state.accessToken;
+    const cachedToken = getCachedAccessToken();
+    if (cachedToken) {
+      state.accessToken = cachedToken;
+      return cachedToken;
+    }
     setStatus("Ber om tilgang...", "working");
 
     if (!state.api?.extension?.requestPermission) {
@@ -517,15 +553,12 @@
     debug("requestPermission svar:", result);
 
     if (typeof result === "string" && result && result !== "pending" && result !== "denied") {
-      state.accessToken = result;
-      resolveTokenWaiters(result);
-      return result;
+      return setAccessToken(result);
     }
     if (result === "denied") throw new Error("Tilgang avslått.");
     if (result === "pending" || !result) {
       const token = await waitForToken(CONFIG.TOKEN_WAIT_MS);
-      state.accessToken = token;
-      return token;
+      return setAccessToken(token);
     }
     throw new Error(`Uventet svar: ${String(result)}`);
   }
@@ -603,6 +636,7 @@
       ui.explorerFrame,
       async (event) => {
         if (event === "extension.sessionInvalid") {
+          clearAccessToken();
           const token = await requestAccessToken().catch(() => null);
           if (token && state.explorerApi?.embed?.setTokens) {
             state.explorerApi.embed.setTokens({ accessToken: token }).catch(() => {});
@@ -3370,8 +3404,10 @@
     if (event === "extension.accessToken") {
       const token = args?.data;
       if (typeof token === "string" && token && token !== "pending" && token !== "denied") {
-        state.accessToken = token;
-        resolveTokenWaiters(token);
+        setAccessToken(token);
+        if (!state.busy) {
+          setTimeout(() => refreshKofListOnOpen("access-token").catch(() => {}), 0);
+        }
       }
       return;
     }
