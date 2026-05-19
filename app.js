@@ -7,7 +7,7 @@
     TOKEN_WAIT_MS: 30000,
     PROXY_URL: "/.netlify/functions/tc-proxy",
     APP_TITLE: "Geomatikksenter",
-    APP_BUILD: "20260519-token-auto-refresh",
+    APP_BUILD: "20260519-fielddata-attachments",
     JXL_ECEF_NN2000_GEOID_OFFSET_M: 40.3703,
     AUTO_CONVERT_ON_OPEN: true,
     IFC_POINT_OBJECT_HEIGHT_M: 1,
@@ -2821,20 +2821,31 @@
       await ensureReady();
       setStatus("Henter KOF/SOSI/GML-filer fra prosjektet...", "working");
 
-      const proxyRes = await callProxy("listProjectKofFiles", {
-        token: state.accessToken,
-        projectId: state.project.id,
-        projectLocation: state.project.location
-      });
+      let proxyRes = null;
+      let result = null;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        proxyRes = await callProxy("listProjectKofFiles", {
+          token: state.accessToken,
+          projectId: state.project.id,
+          projectLocation: state.project.location
+        });
 
-      if (!proxyRes.ok || !proxyRes.json) {
-        setStatus(`Feil: Proxy svarte med HTTP ${proxyRes.status}`, "error");
-        setDebug({ step: "listProxyHttp", status: proxyRes.status, preview: shortText(proxyRes.text, 1500) });
+        result = proxyRes.json;
+        if (proxyRes.ok && result?.ok) break;
+        if (attempt === 0) {
+          clearAccessToken();
+          await requestAccessToken();
+          continue;
+        }
+      }
+
+      if (!proxyRes?.ok || !proxyRes.json) {
+        setStatus(`Feil: Proxy svarte med HTTP ${proxyRes?.status}`, "error");
+        setDebug({ step: "listProxyHttp", status: proxyRes?.status, preview: shortText(proxyRes?.text, 1500) });
         return;
       }
 
-      const result = proxyRes.json;
-      if (!result.ok) {
+      if (!result?.ok) {
         setStatus("Kunne ikke hente filliste", "error");
         setDebug(result);
         return;

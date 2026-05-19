@@ -1240,9 +1240,7 @@ async function handleGetFieldDataJxl(body) {
   const jxlFile =
     (wantedFileId && jxlCandidates.find((file) => String(file.id || "") === wantedFileId)) ||
     (wantedFileName && jxlCandidates.find((file) => normalizeFieldDataName(file.fileName || "") === wantedFileName)) ||
-    (detail.rootDataFileJxl || null) ||
-    jxlCandidates[0] ||
-    null;
+    (!wantedFileId && !wantedFileName ? (jxlCandidates[0] || detail.rootDataFileJxl || null) : null);
   const downloadUrl = jxlFile?.downloadUrl || null;
   if (!downloadUrl) {
     return jsonResponse(200, {
@@ -1654,16 +1652,6 @@ async function enrichFieldDataJxlJobs({ token, projectId, jobs, diagnostics }) {
   const jobsToInspect = jobs.slice(0, 40);
   const entriesByKey = new Map();
 
-  for (const job of jobs) {
-    if (!job.jxlFileName && !job.rootDataFileJxl) continue;
-    const file = normalizeFieldDataJxlFile(job.rootDataFileJxl || {
-      id: job.jxlFileId,
-      fileName: job.jxlFileName,
-      size: job.size
-    }, "Root JXL");
-    addFieldDataJxlEntry(entriesByKey, job, file);
-  }
-
   await mapWithConcurrency(jobsToInspect, 4, async (job) => {
     const detailUrl = `https://eu.api.maps.trimblegeospatial.com/projects/${encodedProjectId}/surveyjobs/${job.id}?includeAttachments=true`;
     const detailRes = await fetchFieldDataJson(detailUrl, token);
@@ -1723,10 +1711,6 @@ function extractFieldDataJxlFiles(job) {
   const out = [];
   const seen = new Set();
 
-  if (job?.rootDataFileJxl) {
-    addFieldDataJxlFile(out, seen, normalizeFieldDataJxlFile(job.rootDataFileJxl, "Root JXL"));
-  }
-
   walkFieldDataJxlFiles(job, [], out, seen);
   return out.sort((a, b) =>
     String(b.updatedUtc || "").localeCompare(String(a.updatedUtc || "")) ||
@@ -1746,6 +1730,7 @@ function walkFieldDataJxlFiles(node, pathParts, out, seen) {
   addFieldDataJxlFile(out, seen, file);
 
   for (const [key, value] of Object.entries(node)) {
+    if (key === "rootDataFileJxl") continue;
     if (value && typeof value === "object") {
       walkFieldDataJxlFiles(value, pathParts.concat(key), out, seen);
     }
