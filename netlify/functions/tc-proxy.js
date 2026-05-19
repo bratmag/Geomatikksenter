@@ -11,6 +11,7 @@ exports.handler = async function handler(event) {
     const body = safeJsonParse(event.body) || {};
     const { action } = body;
 
+    if (action === "listProjectExplorer") return await handleListProjectExplorer(body);
     if (action === "listProjectKofFiles") return await handleListProjectKofFiles(body);
     if (action === "downloadKofFile") return await handleDownloadKofFile(body);
     if (action === "probeCore") return await handleProbeCore(body);
@@ -1502,6 +1503,143 @@ async function tryListProjectFilesCandidates({ token, projectId, projectLocation
     resolvedBaseUrl: base,
     regionsDiscovered: regions,
     candidatesTried: diagnostics.length,
+    diagnostics
+  };
+}
+
+async function handleListProjectExplorer(body) {
+  const { token, projectId, projectLocation } = body;
+  if (!token || !projectId) {
+    return jsonResponse(400, { ok: false, error: "Mangler token eller projectId" });
+  }
+
+  const uploadParent = await resolveProjectUploadParent({ token, projectId, projectLocation });
+  const diagnostics = [...uploadParent.diagnostics];
+  if (!uploadParent.parentId) {
+    return jsonResponse(200, {
+      ok: false,
+      action: "listProjectExplorer",
+      error: "Fant ikke rotmappe for prosjektet.",
+      diagnostics
+    });
+  }
+
+  const explorer = await traverseProjectExplorer({
+    token,
+    projectLocation,
+    rootFolderId: uploadParent.parentId
+  });
+  diagnostics.push(...explorer.diagnostics);
+
+  return jsonResponse(200, {
+    ok: explorer.ok,
+    action: "listProjectExplorer",
+    project: { id: projectId, location: projectLocation },
+    rootFolderId: uploadParent.parentId,
+    rootFolderSource: uploadParent.source,
+    folders: explorer.folders,
+    files: explorer.files,
+    convertedFiles: explorer.convertedFiles,
+    diagnostics
+  });
+}
+
+async function traverseProjectExplorer({ token, projectLocation, rootFolderId }) {
+  const base = await getCoreBaseUrlAsync(projectLocation);
+  const diagnostics = [];
+  const foldersById = new Map();
+  const allFilesByKey = new Map();
+  const folderQueue = [{ id: rootFolderId, name: "Prosjekt", parentId: null, pathParts: [] }];
+  const visitedFolders = new Set();
+
+  foldersById.set(rootFolderId, {
+    id: rootFolderId,
+    name: "Prosjekt",
+    parentId: null,
+    path: "",
+    depth: 0
+  });
+
+  while (folderQueue.length) {
+    const current = folderQueue.shift();
+    if (!current?.id || visitedFolders.has(current.id)) continue;
+    visitedFolders.add(current.id);
+
+    const url = `${base}/folders/${encodeURIComponent(current.id)}/items`;
+    const res = await fetchJsonWithBearer(url, token);
+    diagnostics.push({
+      name: `project-explorer-items:${current.id}`,
+      url,
+      ok: res.ok,
+      status: res.status,
+      preview: shortText(res.text, 400)
+    });
+    if (!res.ok || !res.json) continue;
+
+    const items = normalizeItemsFromAnyResponse(res.json, current.pathParts);
+    for (const item of items) {
+      if (item.kind === "folder") {
+        const folder = {
+          id: item.id,
+          name: item.name || "(uten navn)",
+          parentId: item.parentId || current.id,
+          path: item.path || [...current.pathParts, item.name || ""].filter(Boolean).join("/"),
+          depth: current.pathParts.length + 1
+        };
+        if (!foldersById.has(folder.id)) {
+          foldersById.set(folder.id, folder);
+          folderQueue.push({
+            id: folder.id,
+            name: folder.name,
+            parentId: folder.parentId,
+            pathParts: folder.path ? folder.path.split("/").filter(Boolean) : []
+          });
+        }
+        continue;
+      }
+
+      if (!item.id || !item.name) continue;
+      const key = `${item.id}|${item.parentId || current.id}|${item.name}`;
+      if (!allFilesByKey.has(key)) {
+        allFilesByKey.set(key, {
+          ...item,
+          parentId: item.parentId || current.id,
+          path: item.path || current.pathParts.join("/")
+        });
+      }
+    }
+  }
+
+  const allFiles = Array.from(allFilesByKey.values());
+  const convertedFiles = allFiles
+    .filter((item) => isConvertedOutputName(item.name))
+    .map((item) => ({
+      id: item.id,
+      name: item.name,
+      versionId: item.versionId || null,
+      modifiedOn: item.modifiedOn || null,
+      revision: item.revision || null,
+      parentId: item.parentId || null,
+      path: item.path || ""
+    }));
+
+  const files = allFiles.map((file) => ({
+    ...file,
+    convertible: isSourceFileName(file.name),
+    existingOutputs: findExistingConvertedOutputs(file, convertedFiles)
+  })).sort((a, b) =>
+    String(a.name).localeCompare(String(b.name), undefined, { sensitivity: "base" })
+  );
+
+  const folders = Array.from(foldersById.values()).sort((a, b) =>
+    String(a.path || a.name).localeCompare(String(b.path || b.name), undefined, { sensitivity: "base" })
+  );
+
+  return {
+    ok: folders.length > 0 || files.length > 0,
+    folders,
+    files,
+    convertedFiles,
     diagnostics
   };
 }

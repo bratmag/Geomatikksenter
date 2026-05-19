@@ -7,7 +7,7 @@
     TOKEN_WAIT_MS: 30000,
     PROXY_URL: "/.netlify/functions/tc-proxy",
     APP_TITLE: "Geomatikksenter",
-    APP_BUILD: "20260519-project-explorer",
+    APP_BUILD: "20260519-custom-project-explorer",
     JXL_ECEF_NN2000_GEOID_OFFSET_M: 40.3703,
     AUTO_CONVERT_ON_OPEN: false,
     IFC_POINT_OBJECT_HEIGHT_M: 1,
@@ -24,6 +24,8 @@
     project: null,
     selectedFile: null,
     fileList: [],
+    projectExplorer: null,
+    currentProjectFolderId: null,
     activeView: "project",
     jxlSources: [],
     selectedJxlSource: null,
@@ -413,27 +415,73 @@
     ui.fileList.innerHTML = "";
     if (ui.projectUploadBtn) ui.projectUploadBtn.disabled = state.busy || !canOpenProjectUpload();
 
-    ui.fileCount.textContent = state.fileList.length
-      ? `${state.fileList.length} fil${state.fileList.length === 1 ? "" : "er"}`
+    const explorer = state.projectExplorer;
+    const currentFolderId = state.currentProjectFolderId || explorer?.rootFolderId || null;
+    const allConvertibleFiles = state.fileList;
+    const currentFiles = explorer
+      ? explorer.files.filter((file) => (file.parentId || null) === currentFolderId)
+      : state.fileList;
+    const childFolders = explorer
+      ? explorer.folders.filter((folder) => (folder.parentId || null) === currentFolderId)
+      : [];
+
+    ui.fileCount.textContent = allConvertibleFiles.length
+      ? `${allConvertibleFiles.length} konverterbar${allConvertibleFiles.length === 1 ? " fil" : "e filer"}`
       : "";
 
-    if (!state.fileList.length) {
+    if (explorer) {
+      const breadcrumb = buildProjectBreadcrumb(currentFolderId);
+      const breadcrumbRow = el("div", "explorer-breadcrumb");
+      breadcrumb.forEach((folder, index) => {
+        const crumb = el("button", index === breadcrumb.length - 1 ? "primary" : "", folder.name || "Prosjekt");
+        crumb.addEventListener("click", () => {
+          state.currentProjectFolderId = folder.id;
+          renderFileList();
+        });
+        breadcrumbRow.appendChild(crumb);
+      });
+      ui.fileList.appendChild(breadcrumbRow);
+
+      if (childFolders.length) {
+        const foldersWrap = el("div", "file-list");
+        childFolders
+          .sort((a, b) => String(a.name).localeCompare(String(b.name), undefined, { sensitivity: "base" }))
+          .forEach((folder) => {
+            const row = el("button", "file-item folder-item", [
+              el("div", "file-info", [
+                el("div", "file-name", folder.name || "(mappe)"),
+                el("div", "file-meta", "Mappe")
+              ])
+            ]);
+            row.addEventListener("click", () => {
+              state.currentProjectFolderId = folder.id;
+              renderFileList();
+            });
+            foldersWrap.appendChild(row);
+          });
+        ui.fileList.appendChild(foldersWrap);
+      }
+    }
+
+    if (!currentFiles.length && !childFolders.length) {
       const empty = el("div", "empty-state", "Trykk \"Oppdater prosjektdata\" for å hente filer fra prosjektet.");
       ui.fileList.appendChild(empty);
       return;
     }
 
-    for (const file of state.fileList) {
+    for (const file of currentFiles) {
       const isSelected = state.selectedFile?.id === file.id;
       const isManualSelected = state.manualSelectedFileIds.has(file.id);
       const conversionState = getFileConversionState(file);
-      const row = el("label", `file-item ${conversionState.className}${isSelected || isManualSelected ? " selected" : ""}`);
+      const isConvertible = file.convertible !== false && isSourceProjectFile(file);
+      const row = el("label", `file-item ${isConvertible ? conversionState.className : ""}${isSelected || isManualSelected ? " selected" : ""}${isConvertible ? "" : " disabled-item"}`);
 
       const selector = document.createElement("input");
       selector.type = state.manualSelectionMode ? "checkbox" : "radio";
       selector.name = state.manualSelectionMode ? "manualKofFile" : "kofFile";
       selector.value = file.id;
       selector.checked = state.manualSelectionMode ? isManualSelected : isSelected;
+      selector.disabled = !isConvertible;
       selector.addEventListener("change", () => {
         if (state.manualSelectionMode) {
           if (selector.checked) state.manualSelectedFileIds.add(file.id);
@@ -447,15 +495,36 @@
 
       const info = el("div", "file-info");
       info.appendChild(el("div", "file-name", file.name || "(uten navn)"));
-      if (file.path) info.appendChild(el("div", "file-meta", file.path));
+      info.appendChild(el("div", "file-meta", isConvertible ? (file.path || "Konverterbar fil") : (file.path || "Ikke konverterbar")));
 
-      const statusBadge = el("span", `file-status ${conversionState.className}`, conversionState.label);
+      const statusBadge = isConvertible
+        ? el("span", `file-status ${conversionState.className}`, conversionState.label)
+        : el("span", "file-status", "Fil");
 
       row.appendChild(selector);
       row.appendChild(info);
       row.appendChild(statusBadge);
       ui.fileList.appendChild(row);
     }
+  }
+
+  function isSourceProjectFile(file) {
+    return /\.(kof|sos|sosi|gml)$/i.test(String(file?.name || ""));
+  }
+
+  function buildProjectBreadcrumb(folderId) {
+    const explorer = state.projectExplorer;
+    if (!explorer?.folders?.length) return [];
+    const foldersById = new Map(explorer.folders.map((folder) => [folder.id, folder]));
+    const out = [];
+    let current = foldersById.get(folderId) || foldersById.get(explorer.rootFolderId);
+    const seen = new Set();
+    while (current && !seen.has(current.id)) {
+      seen.add(current.id);
+      out.unshift(current);
+      current = current.parentId ? foldersById.get(current.parentId) : null;
+    }
+    return out;
   }
 
   function switchView(view) {
@@ -2867,7 +2936,7 @@
       let proxyRes = null;
       let result = null;
       for (let attempt = 0; attempt < 2; attempt += 1) {
-        proxyRes = await callProxy("listProjectKofFiles", {
+        proxyRes = await callProxy("listProjectExplorer", {
           token: state.accessToken,
           projectId: state.project.id,
           projectLocation: state.project.location
@@ -2889,12 +2958,37 @@
       }
 
       if (!result?.ok) {
-        setStatus("Kunne ikke hente filliste", "error");
-        setDebug(result);
-        return;
+        proxyRes = await callProxy("listProjectKofFiles", {
+          token: state.accessToken,
+          projectId: state.project.id,
+          projectLocation: state.project.location
+        });
+        result = proxyRes.json;
+        if (!proxyRes.ok || !result?.ok) {
+          setStatus("Kunne ikke hente filliste", "error");
+          setDebug(result || { status: proxyRes.status, preview: shortText(proxyRes.text, 1500) });
+          return;
+        }
       }
 
-      state.fileList = Array.isArray(result.files) ? result.files : [];
+      if (result.action === "listProjectExplorer") {
+        state.projectExplorer = {
+          rootFolderId: result.rootFolderId || null,
+          folders: Array.isArray(result.folders) ? result.folders : [],
+          files: Array.isArray(result.files) ? result.files : []
+        };
+        if (!state.currentProjectFolderId || !state.projectExplorer.folders.some((folder) => folder.id === state.currentProjectFolderId)) {
+          state.currentProjectFolderId = state.projectExplorer.rootFolderId;
+        }
+        state.fileList = state.projectExplorer.files.filter((file) => file.convertible !== false && isSourceProjectFile(file));
+      } else {
+        state.projectExplorer = null;
+        state.currentProjectFolderId = null;
+        state.fileList = Array.isArray(result.files) ? result.files : [];
+      }
+      state.manualSelectedFileIds.forEach((id) => {
+        if (!state.fileList.some((file) => file.id === id)) state.manualSelectedFileIds.delete(id);
+      });
       if (!state.fileList.length) {
         state.selectedFile = null;
       } else if (!state.selectedFile || !state.fileList.some((f) => f.id === state.selectedFile.id)) {
@@ -2922,6 +3016,11 @@
         candidatesTried: result.candidatesTried,
         source: result.source,
         sources: result.sources || null,
+        explorer: state.projectExplorer ? {
+          folders: state.projectExplorer.folders.length,
+          files: state.projectExplorer.files.length,
+          rootFolderId: state.projectExplorer.rootFolderId
+        } : null,
         files: state.fileList.map((f) => ({
           name: f.name,
           path: f.path || "",
