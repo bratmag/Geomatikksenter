@@ -1247,7 +1247,7 @@ async function handleGetFieldDataJxl(body) {
     return jsonResponse(200, {
       ok: false,
       action: "getFieldDataJxl",
-      error: "Jobben mangler en JXL-fil med downloadUrl.",
+      error: "Jobben mangler en JXL/JOB-fil med downloadUrl.",
       job: summarizeFieldDataJob(detail),
       jxlCandidates: jxlCandidates.map((file) => ({
         id: file.id || null,
@@ -1261,7 +1261,7 @@ async function handleGetFieldDataJxl(body) {
 
   const jxlRes = await fetchTextNoAuth(downloadUrl);
   diagnostics.push({
-    name: "rootDataFileJxl-download",
+    name: "field-data-source-download",
     ok: jxlRes.ok,
     status: jxlRes.status,
     contentType: jxlRes.contentType,
@@ -1878,7 +1878,7 @@ function walkFieldDataJxlFiles(node, pathParts, out, seen) {
 function normalizeFieldDataJxlFile(node, sourceLabel) {
   if (!node || typeof node !== "object") return null;
   const fileName = node.fileName || node.filename || node.name || node.title || null;
-  if (!/\.jxl$/i.test(String(fileName || ""))) return null;
+  if (!/\.(jxl|job)$/i.test(String(fileName || ""))) return null;
 
   const downloadUrl =
     node.downloadUrl ||
