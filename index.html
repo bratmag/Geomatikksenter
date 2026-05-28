@@ -94,6 +94,39 @@
       flex-wrap: wrap;
     }
 
+    .delivery-options {
+      margin: 12px 0 10px;
+      max-width: 420px;
+    }
+
+    .field-label {
+      display: grid;
+      gap: 4px;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .field-label input {
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--card);
+      color: var(--text);
+      font: inherit;
+      text-transform: none;
+      letter-spacing: 0;
+    }
+
+    .field-label input:focus {
+      outline: none;
+      border-color: #5b8fb8;
+      box-shadow: 0 0 0 2px rgba(91,143,184,0.14);
+    }
+
     button {
       padding: 8px 14px;
       border: 1px solid var(--border);
@@ -398,7 +431,7 @@
 </head>
 <body>
   <div id="app"></div>
-  <script src="app.js?v=20260519-custom-project-explorer"></script>
+  <script src="app.js?v=20260528-lede-sosi-delivery"></script>
 </body>
 </html>
 

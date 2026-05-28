@@ -7,7 +7,7 @@
     TOKEN_WAIT_MS: 30000,
     PROXY_URL: "/.netlify/functions/tc-proxy",
     APP_TITLE: "Geomatikksenter",
-    APP_BUILD: "20260519-custom-project-explorer",
+    APP_BUILD: "20260528-lede-sosi-delivery",
     JXL_ECEF_NN2000_GEOID_OFFSET_M: 40.3703,
     AUTO_CONVERT_ON_OPEN: false,
     IFC_POINT_OBJECT_HEIGHT_M: 1,
@@ -29,6 +29,7 @@
     activeView: "project",
     jxlSources: [],
     selectedJxlSource: null,
+    deliveryProducer: "",
     tokenWaiters: [],
     isEmbedded: false,
     lastResult: null,
@@ -92,7 +93,7 @@
     if (ui.jxlRefreshBtn) ui.jxlRefreshBtn.disabled = busy;
     if (ui.jxlConvertBtn) ui.jxlConvertBtn.disabled = busy || !state.selectedJxlSource;
     if (ui.projectUploadBtn) ui.projectUploadBtn.disabled = busy || !canOpenProjectUpload();
-    if (ui.deliveryRunBtn) ui.deliveryRunBtn.disabled = true;
+    if (ui.deliveryRunBtn) ui.deliveryRunBtn.disabled = busy || !state.selectedJxlSource;
   }
 
   function shortText(text, len = 1500) {
@@ -142,6 +143,11 @@
   function getIfcFilename(filename) {
     const name = String(filename || "output.gml").trim() || "output.gml";
     return /\.(gml|jxl)$/i.test(name) ? name.replace(/\.(gml|jxl)$/i, ".ifc") : `${name}.ifc`;
+  }
+
+  function getSosiFilename(filename) {
+    const name = String(filename || "output.jxl").trim() || "output.jxl";
+    return /\.(jxl|job|sos|sosi)$/i.test(name) ? name.replace(/\.(jxl|job|sos|sosi)$/i, ".sos") : `${name}.sos`;
   }
 
   function getUploadTargetFile() {
@@ -200,6 +206,19 @@
   function clearAccessToken() {
     state.accessToken = null;
     try { window.sessionStorage?.removeItem("geomatikksenter.accessToken"); } catch {}
+  }
+
+  function getStoredDeliveryProducer() {
+    try {
+      return window.localStorage?.getItem("geomatikksenter.deliveryProducer") || "";
+    } catch {
+      return "";
+    }
+  }
+
+  function setStoredDeliveryProducer(value) {
+    state.deliveryProducer = String(value || "").trim();
+    try { window.localStorage?.setItem("geomatikksenter.deliveryProducer", state.deliveryProducer); } catch {}
   }
 
   function waitForToken(ms = CONFIG.TOKEN_WAIT_MS) {
@@ -308,7 +327,7 @@
         el("div", "file-name", "Lede SOSI"),
         el("div", "file-meta", "SOSI-leveranse med mottakerstruktur")
       ]),
-      el("span", "file-status pending", "Planlagt")
+      el("span", "file-status converted", "Klar")
     ]));
     deliveryProfiles.appendChild(el("label", "file-item pending", [
       el("div", "file-info", [
@@ -318,6 +337,18 @@
       el("span", "file-status pending", "Planlagt")
     ]));
     deliveryCard.appendChild(deliveryProfiles);
+    const deliveryOptions = el("div", "delivery-options");
+    const producerLabel = el("label", "field-label", [
+      el("span", null, "PRODUSENT")
+    ]);
+    const deliveryProducerInput = document.createElement("input");
+    deliveryProducerInput.type = "text";
+    deliveryProducerInput.placeholder = "Firma eller person";
+    deliveryProducerInput.value = getStoredDeliveryProducer();
+    state.deliveryProducer = deliveryProducerInput.value;
+    producerLabel.appendChild(deliveryProducerInput);
+    deliveryOptions.appendChild(producerLabel);
+    deliveryCard.appendChild(deliveryOptions);
     const deliveryBtnRow = el("div", "btn-row");
     const deliveryRunBtn = el("button", null, "Klargjør leveranse");
     deliveryRunBtn.disabled = true;
@@ -389,6 +420,7 @@
       jxlList,
       filesCard,
       deliveryCard,
+      deliveryProducerInput,
       deliveryRunBtn,
       explorerCard,
       closeExplorerBtn,
@@ -534,7 +566,7 @@
         ? "delivery"
         : "project";
     if (ui.filesCard) ui.filesCard.style.display = state.activeView === "project" ? "" : "none";
-    if (ui.jxlCard) ui.jxlCard.style.display = state.activeView === "field" ? "" : "none";
+    if (ui.jxlCard) ui.jxlCard.style.display = state.activeView === "field" || state.activeView === "delivery" ? "" : "none";
     if (ui.deliveryCard) ui.deliveryCard.style.display = state.activeView === "delivery" ? "" : "none";
     if (ui.projectTabBtn) ui.projectTabBtn.className = state.activeView === "project" ? "primary" : "";
     if (ui.fieldTabBtn) ui.fieldTabBtn.className = state.activeView === "field" ? "primary" : "";
@@ -2138,6 +2170,178 @@
     return objects;
   }
 
+  function jxlToLedeSosi(jxlText, options = {}) {
+    const xml = repairUtf8Mojibake(String(jxlText || ""));
+    const doc = new DOMParser().parseFromString(xml, "application/xml");
+    const parserError = doc.querySelector("parsererror");
+    if (parserError) {
+      throw new Error(`Kunne ikke lese JXL som XML: ${shortText(parserError.textContent || "", 300)}`);
+    }
+
+    const reductionsPoints = xmlElements(doc, "Point")
+      .filter((point) => xmlLocalName(point.parentNode) === "Reductions")
+      .filter((point) => jxlDirectText(point, "Deleted").toLowerCase() !== "true");
+    const pointCoords = new Map();
+    for (const point of reductionsPoints) {
+      const name = cleanJxlPointName(jxlDirectText(point, "Name"));
+      const coord = jxlRecordCoordinate(point);
+      if (name && coord) registerJxlPointCoord(pointCoords, name, coord);
+    }
+    for (const point of xmlElements(doc, "PointRecord")) {
+      if (jxlDirectText(point, "Deleted").toLowerCase() === "true") continue;
+      const name = cleanJxlPointName(jxlDirectText(point, "Name"));
+      const coord = jxlRecordCoordinate(point);
+      if (name && coord) registerJxlPointCoord(pointCoords, name, coord);
+    }
+
+    const headerCoords = reductionsPoints
+      .map((point) => jxlRecordCoordinate(point))
+      .filter(isLikelyJxlGridCoord);
+    if (!headerCoords.length) {
+      throw new Error("Fant ingen grid-koordinater i JXL-filen.");
+    }
+
+    const lines = [
+      ".HODE",
+      "..TEGNSETT ISO8859-1",
+      "..OMRÅDE",
+      `...MIN-NØ ${formatSosiExtent(headerCoords, "min")}`,
+      `...MAX-NØ ${formatSosiExtent(headerCoords, "max")}`,
+      "..SOSI-VERSJON 4.5",
+      "..SOSI-NIVÅ 2",
+      "..TRANSPAR",
+      `...KOORDSYS ${getJxlSosiCoordSys(doc)}`,
+      `...VERT-DATUM ${getJxlVerticalDatum(doc)}`,
+      "...ORIGO-NØ 0  0",
+      "...ENHET 0.001"
+    ];
+
+    const producer = String(options.producer || "").trim();
+    lines.push(producer ? `..PRODUSENT ${producer}` : "..PRODUSENT");
+
+    let objectNo = 1;
+    let pointCount = 0;
+    let curveCount = 0;
+    for (const point of reductionsPoints) {
+      const code = jxlDirectText(point, "Code");
+      const coord = jxlRecordCoordinate(point);
+      if (!code || !coord) continue;
+      lines.push(`.PUNKT ${objectNo}:`);
+      appendLedeSosiFeatureLines(lines, code, jxlFeatureAttributeEntries(point), { point: true });
+      appendSosiCoordLines(lines, [coord]);
+      objectNo += 1;
+      pointCount += 1;
+    }
+
+    for (const polyline of xmlElements(doc, "LivePolylineRecord")) {
+      if (jxlDirectText(polyline, "Deleted").toLowerCase() === "true") continue;
+      const code = jxlDirectText(polyline, "Code");
+      if (!code) continue;
+      const coords = getJxlPolylineCoords(polyline, pointCoords);
+      if (coords.length < 2) continue;
+      lines.push(`.KURVE ${objectNo}:`);
+      appendLedeSosiFeatureLines(lines, code, jxlFeatureAttributeEntries(polyline), { point: false });
+      appendSosiCoordLines(lines, coords);
+      objectNo += 1;
+      curveCount += 1;
+    }
+
+    lines.push(".SLUTT", "");
+    return {
+      text: lines.join("\n"),
+      stats: { points: pointCount, curves: curveCount, objects: pointCount + curveCount }
+    };
+  }
+
+  function formatSosiExtent(coords, mode) {
+    const norths = coords.map((coord) => Number(coord[1])).filter(Number.isFinite);
+    const easts = coords.map((coord) => Number(coord[0])).filter(Number.isFinite);
+    const fn = mode === "max" ? Math.max : Math.min;
+    return `${Math.round(fn(...norths))} ${Math.round(fn(...easts))}`;
+  }
+
+  function getJxlSosiCoordSys(doc) {
+    const zoneName = xmlElements(doc, "ZoneName").map((node) => String(node.textContent || "")).find(Boolean) || "";
+    if (/NTM/i.test(zoneName)) {
+      const zone = Number(String(zoneName).replace(/[^\d]/g, ""));
+      if (Number.isFinite(zone) && zone > 0) return String(zone + 200);
+    }
+    if (zoneName.includes("32")) return "22";
+    if (zoneName.includes("33")) return "23";
+    if (zoneName.includes("35")) return "25";
+    return "";
+  }
+
+  function getJxlVerticalDatum(doc) {
+    const geoidName = xmlElements(doc, "GeoidName").map((node) => String(node.textContent || "")).find(Boolean) || "";
+    return /NN2000/i.test(geoidName) ? "NN2000" : "";
+  }
+
+  function jxlFeatureAttributeEntries(record) {
+    const feature = firstXmlChild(firstXmlChild(record, "Features") || record, "Feature");
+    if (!feature) return [];
+    return xmlElements(feature, "Attribute")
+      .filter((attribute) => xmlLocalName(attribute.parentNode) === "Feature")
+      .map((attribute) => ({
+        name: jxlDirectText(attribute, "Name"),
+        value: jxlDirectText(attribute, "Value"),
+        type: jxlDirectText(attribute, "Type")
+      }))
+      .filter((entry) => entry.name);
+  }
+
+  function appendLedeSosiFeatureLines(lines, code, entries, options = {}) {
+    const entryMap = new Map(entries.map((entry) => [entry.name, entry.value]));
+    const objType = entryMap.get("OBJTYPE") || code || "";
+    lines.push(`..OBJTYPE ${objType}`);
+    for (const entry of entries) {
+      if (!entry.name || entry.name === "OBJTYPE" || entry.name === "KATEGORI" || entry.name === "LTEMA") continue;
+      if (entry.name === "FOTO") {
+        const imageName = normalizeLedeImageName(entry.value);
+        if (imageName) lines.push(`..BILDENAVN ${imageName}`);
+        continue;
+      }
+      if (entry.name === "BILDENAVN" && !entry.value) continue;
+      if (!entry.value) continue;
+      lines.push(`..${entry.name} ${normalizeLedeSosiAttributeValue(entry.name, entry.value)}`);
+    }
+    if (options.point && objType === "Bildepkt_innm" && !entries.some((entry) => entry.name === "BILDENAVN" || entry.name === "FOTO")) {
+      lines.push("..BILDENAVN");
+    }
+  }
+
+  function normalizeLedeSosiAttributeValue(name, value) {
+    const text = String(value || "").trim();
+    if (name === "DATAFANGSTDATO") return text.replace(/^(\d{4})-(\d{2})-(\d{2})$/, "$1$2$3");
+    return text;
+  }
+
+  function normalizeLedeImageName(value) {
+    const fileName = String(value || "").split(/[\\/]/).filter(Boolean).pop() || "";
+    return fileName.replace(/^([A-Za-z]+)_(\d+)_(\d+)/, "$1-$2-$3");
+  }
+
+  function appendSosiCoordLines(lines, coords) {
+    lines.push("..NØH");
+    for (const coord of coords) {
+      lines.push(`${Math.round(Number(coord[1]) * 1000)} ${Math.round(Number(coord[0]) * 1000)} ${Math.round((Number(coord[2]) || 0) * 1000)}`);
+    }
+  }
+
+  function getJxlPolylineCoords(polyline, pointCoords) {
+    const pointNames = [];
+    const start = jxlPointRefText(firstXmlChild(polyline, "StartPoint"));
+    if (start) pointNames.push(start);
+    const parts = firstXmlChild(polyline, "Parts");
+    for (const endPoint of xmlElements(parts || polyline, "EndPoint")) {
+      const value = jxlPointRefText(endPoint);
+      if (value) pointNames.push(value);
+    }
+    let coords = pointNames.map((pointName) => pointCoords.get(cleanJxlPointName(pointName))).filter(Boolean);
+    if (coords.length < 2) coords = jxlInlineCoordinates(polyline);
+    return coords;
+  }
+
   function parseJxlForIfcTextFallback(xml) {
     const pointCoords = new Map();
     for (const block of [...xmlBlockContents(xml, "PointRecord"), ...xmlBlockContents(xml, "Point")]) {
@@ -3352,6 +3556,109 @@
     }
   }
 
+  async function processLedeSosiDelivery() {
+    const source = state.selectedJxlSource;
+    if (!source) {
+      setStatus("Velg en JXL-kilde forst", "error");
+      return;
+    }
+
+    try {
+      setBusy(true);
+      showHint(null, false);
+      await ensureReady();
+      setStoredDeliveryProducer(ui.deliveryProducerInput?.value || state.deliveryProducer || "");
+
+      setStatus(`Klargjor Lede SOSI fra ${source.name || "valgt JXL"}...`, "working");
+      const prepared = await getSelectedJxlSourceText(source);
+      const converted = jxlToLedeSosi(prepared.text || "", {
+        fileName: prepared.jxlName,
+        producer: state.deliveryProducer
+      });
+      const outName = getSosiFilename(prepared.jxlName);
+      state.lastDownloadName = outName;
+      state.lastResult = { file: prepared.sourceFile, text: prepared.text || "" };
+
+      let uploadResult = { ok: false, skipped: true, error: "Fant ikke prosjektmappe for automatisk opplasting." };
+      if (prepared.sourceFile?.parentId) {
+        uploadResult = await uploadConvertedTxtToProject({
+          sourceFile: prepared.sourceFile,
+          outName,
+          txt: converted.text
+        });
+      }
+      state.lastUploadResult = uploadResult;
+
+      if (uploadResult.ok) {
+        setStatus(`Ferdig: ${outName} er lastet opp til prosjektet`, "success");
+      } else {
+        triggerDownload(outName, converted.text);
+        setStatus(`Ferdig: ${outName} er lastet ned lokalt`, "success");
+      }
+      showHint(`Lede SOSI er klargjort med ${converted.stats.points} punkt og ${converted.stats.curves} kurver.`);
+      setDebug({
+        action: "processLedeSosiDelivery",
+        source,
+        outName,
+        producer: state.deliveryProducer,
+        stats: converted.stats,
+        uploadResult,
+        appBuild: CONFIG.APP_BUILD
+      });
+    } catch (err) {
+      console.error(err);
+      setStatus(`Feil: ${err?.message || String(err)}`, "error");
+      setDebug({ action: "processLedeSosiDelivery", error: err?.message || String(err), stack: err?.stack });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function getSelectedJxlSourceText(source) {
+    if (source.sourceType === "connect-file") {
+      const file = source.file || source;
+      const proxyRes = await callProxy("downloadKofFile", {
+        token: state.accessToken,
+        projectId: state.project.id,
+        projectLocation: state.project.location,
+        fileId: file.id,
+        fileName: file.name
+      });
+      if (!proxyRes.ok || !proxyRes.json) throw new Error(`Proxy svarte med HTTP ${proxyRes.status}`);
+      const result = proxyRes.json;
+      if (!result.ok) throw new Error(result.error || result.step || "Kunne ikke laste ned JXL");
+      return {
+        text: result.text || "",
+        jxlName: result.file?.name || file.name || source.name || "lede.jxl",
+        sourceFile: result.file || file
+      };
+    }
+
+    const proxyRes = await callProxy("getFieldDataJxl", {
+      token: state.accessToken,
+      projectId: state.project.id,
+      projectLocation: state.project.location,
+      jobName: source.job?.name || source.name || "JXL",
+      jobTrn: source.job?.id || source.id,
+      jxlFileId: source.job?.jxlFileId || null,
+      jxlFileName: source.job?.jxlFileName || source.name || null
+    });
+    if (!proxyRes.ok || !proxyRes.json) throw new Error(`Proxy svarte med HTTP ${proxyRes.status}`);
+    const result = proxyRes.json;
+    if (!result.ok) throw new Error(result.error || "Fant ikke Field Data JXL");
+    const jxlName = result.jxlFile?.fileName || `${source.job?.name || source.name || "Field Data"}.jxl`;
+    return {
+      text: result.text || "",
+      jxlName,
+      sourceFile: {
+        id: result.jxlFile?.id || result.job?.id || "field-data-jxl",
+        name: jxlName,
+        parentId: result.uploadParentId || null,
+        path: "Field Data"
+      }
+    };
+  }
+
   async function processAllFiles(options = {}) {
     try {
       setBusy(true);
@@ -3593,12 +3900,17 @@
       switchView("field");
       if (!state.jxlSources.length) refreshJxlSources().catch(() => {});
     });
-    ui.deliveryTabBtn.addEventListener("click", () => switchView("delivery"));
+    ui.deliveryTabBtn.addEventListener("click", () => {
+      switchView("delivery");
+      if (!state.jxlSources.length) refreshJxlSources().catch(() => {});
+    });
     ui.refreshBtn.addEventListener("click", () => refreshKofListOnOpen("manual-refresh"));
     ui.stopBtn.addEventListener("click", requestStopConversion);
     ui.convertManualBtn.addEventListener("click", processManualSelectedFiles);
     ui.jxlRefreshBtn.addEventListener("click", refreshJxlSources);
     ui.jxlConvertBtn.addEventListener("click", processSelectedJxlSource);
+    ui.deliveryProducerInput.addEventListener("input", (event) => setStoredDeliveryProducer(event.target.value));
+    ui.deliveryRunBtn.addEventListener("click", processLedeSosiDelivery);
     ui.localUploadBtn.addEventListener("click", () => ui.localFileInput.click());
     ui.localFileInput.addEventListener("change", (event) => processLocalFile(event.target.files?.[0]));
     ui.projectUploadBtn.addEventListener("click", openProjectUploadExplorer);
@@ -3631,11 +3943,13 @@
         refreshJxlSources,
         processSelectedJxlSource,
         processFieldDataJxl,
+        processLedeSosiDelivery,
         processAllFiles,
         requestStopConversion,
         processLocalFile,
         parseJxlForIfc,
         jxlToIfc,
+        jxlToLedeSosi,
         openProjectUploadExplorer,
         uploadConvertedTxtToProject,
         inspectApi() {
