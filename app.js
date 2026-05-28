@@ -2301,7 +2301,7 @@
         if (imageName) lines.push(`..BILDENAVN ${imageName}`);
         continue;
       }
-      if (entry.name === "BILDENAVN" && !entry.value) continue;
+      if (entry.name === "BILDENAVN" && !isImageFilename(entry.value)) continue;
       if (!entry.value) continue;
       lines.push(`..${entry.name} ${normalizeLedeSosiAttributeValue(entry.name, entry.value)}`);
     }
@@ -2319,6 +2319,10 @@
   function normalizeLedeImageName(value) {
     const fileName = String(value || "").split(/[\\/]/).filter(Boolean).pop() || "";
     return fileName.replace(/^([A-Za-z]+)_(\d+)_(\d+)/, "$1-$2-$3");
+  }
+
+  function isImageFilename(value) {
+    return /\.(jpe?g|png|tiff?|webp|heic)$/i.test(String(value || "").trim());
   }
 
   function appendSosiCoordLines(lines, coords) {
