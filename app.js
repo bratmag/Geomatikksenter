@@ -7,7 +7,7 @@
     TOKEN_WAIT_MS: 30000,
     PROXY_URL: "/.netlify/functions/tc-proxy",
     APP_TITLE: "Geomatikksenter",
-    APP_BUILD: "20260528-lede-delivery-zip",
+    APP_BUILD: "20260528-upload-delivery-zip",
     JXL_ECEF_NN2000_GEOID_OFFSET_M: 40.3703,
     AUTO_CONVERT_ON_OPEN: false,
     IFC_POINT_OBJECT_HEIGHT_M: 1,
@@ -900,6 +900,48 @@
     }
 
     return proxyRes.json;
+  }
+
+  async function uploadBinaryBlobToProject({ sourceFile, outName, blob }) {
+    const parentId = sourceFile?.parentId || null;
+    if (!parentId) {
+      return {
+        ok: false,
+        skipped: true,
+        error: "Fant ikke prosjektmappe for automatisk opplasting."
+      };
+    }
+
+    const proxyRes = await callProxy("uploadBinaryFile", {
+      token: state.accessToken,
+      projectId: state.project.id,
+      projectLocation: state.project.location,
+      parentId,
+      fileName: outName,
+      base64: await blobToBase64(blob)
+    });
+
+    if (!proxyRes.ok || !proxyRes.json) {
+      return {
+        ok: false,
+        error: `Proxy svarte med HTTP ${proxyRes.status}`,
+        httpStatus: proxyRes.status,
+        preview: shortText(proxyRes.text, 400)
+      };
+    }
+
+    return proxyRes.json;
+  }
+
+  async function blobToBase64(blob) {
+    const buffer = await blob.arrayBuffer();
+    let binary = "";
+    const bytes = new Uint8Array(buffer);
+    const chunkSize = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+      binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+    }
+    return btoa(binary);
   }
 
   function convertKofToTxt(kofText) {
@@ -3769,18 +3811,29 @@
       state.lastDownloadName = outName;
       state.lastResult = { file: prepared.sourceFile, text: prepared.text || "" };
 
-      let uploadResult = { ok: false, skipped: true, error: "Fant ikke prosjektmappe for automatisk opplasting." };
       const zipBlob = await buildLedeDeliveryZip({
         jxlText: prepared.text || "",
         sosiText: converted.text,
         sosiName,
         assets: prepared.assets || []
       });
+      let uploadResult = { ok: false, skipped: true, error: "Fant ikke prosjektmappe for automatisk opplasting." };
+      if (prepared.sourceFile?.parentId) {
+        uploadResult = await uploadBinaryBlobToProject({
+          sourceFile: prepared.sourceFile,
+          outName,
+          blob: zipBlob
+        });
+      }
       state.lastUploadResult = uploadResult;
 
       triggerBlobDownload(outName, zipBlob);
-      setStatus(`Ferdig: ${outName} er lastet ned lokalt`, "success");
-      showHint(`Lede-leveranse er klargjort med SOSI, bilder og skjermbilde der de finnes. SOSI inneholder ${converted.stats.points} punkt og ${converted.stats.curves} kurver.`);
+      setStatus(uploadResult.ok
+        ? `Ferdig: ${outName} er lastet opp til prosjektet og lastet ned lokalt`
+        : `Ferdig: ${outName} er lastet ned lokalt`, "success");
+      showHint(uploadResult.ok
+        ? `Lede-leveransen ble også lastet opp til Trimble Connect. SOSI inneholder ${converted.stats.points} punkt og ${converted.stats.curves} kurver.`
+        : `Lede-leveranse er klargjort med SOSI, bilder og skjermbilde der de finnes. Automatisk opplasting kom ikke helt i mal. SOSI inneholder ${converted.stats.points} punkt og ${converted.stats.curves} kurver.`);
       setDebug({
         action: "processLedeSosiDelivery",
         source,
@@ -3788,6 +3841,7 @@
         sosiName,
         producer: state.deliveryProducer,
         stats: converted.stats,
+        uploadResult,
         assets: summarizeDeliveryAssets(prepared.text || "", prepared.assets || []),
         appBuild: CONFIG.APP_BUILD
       });

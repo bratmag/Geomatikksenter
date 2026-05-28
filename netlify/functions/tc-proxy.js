@@ -16,6 +16,7 @@ exports.handler = async function handler(event) {
     if (action === "downloadKofFile") return await handleDownloadKofFile(body);
     if (action === "probeCore") return await handleProbeCore(body);
     if (action === "uploadConvertedTxt") return await handleUploadConvertedTxt(body);
+    if (action === "uploadBinaryFile") return await handleUploadBinaryFile(body);
     if (action === "getFieldDataJxl") return await handleGetFieldDataJxl(body);
     if (action === "listJxlSources") return await handleListJxlSources(body);
 
@@ -552,11 +553,7 @@ async function handleProbeCore(body) {
 
 async function uploadToSignedUrl(uploadUrl, fileBuffer, diagnostics, fileName) {
   const body = new Uint8Array(fileBuffer);
-  const preferredContentType = /\.xml$/i.test(String(fileName || ""))
-    ? "application/xml; charset=utf-8"
-    : /\.ifc$/i.test(String(fileName || ""))
-      ? "application/x-step; charset=utf-8"
-      : "text/plain; charset=utf-8";
+  const preferredContentType = inferUploadContentType(fileName);
   const methods = [
     { method: "PUT", headers: { "Content-Type": preferredContentType } },
     { method: "PUT", headers: { "Content-Type": "application/octet-stream" } },
@@ -586,6 +583,14 @@ async function uploadToSignedUrl(uploadUrl, fileBuffer, diagnostics, fileName) {
   }
 
   return { ok: false, error: "Ingen signed URL upload-metode fungerte." };
+}
+
+function inferUploadContentType(fileName) {
+  const name = String(fileName || "");
+  if (/\.xml$/i.test(name)) return "application/xml; charset=utf-8";
+  if (/\.ifc$/i.test(name)) return "application/x-step; charset=utf-8";
+  if (/\.zip$/i.test(name)) return "application/zip";
+  return "text/plain; charset=utf-8";
 }
 
 function buildCompleteBodies({ uploadId, uploadInfo, fileBuffer, digest, digestHeader }) {
@@ -831,7 +836,7 @@ async function tryDirectMultipartUpload({ token, projectLocation, parentId, file
 
     if (target.mode === "form-data-file") {
       const form = new FormData();
-      form.append("file", new Blob([fileBuffer], { type: "text/plain;charset=utf-8" }), fileName);
+      form.append("file", new Blob([fileBuffer], { type: inferUploadContentType(fileName) }), fileName);
       body = form;
     } else {
       body = new Uint8Array(fileBuffer);
@@ -1024,6 +1029,83 @@ async function handleUploadConvertedTxt(body) {
     ok: false,
     action: "uploadConvertedTxt",
     error: "Kunne ikke laste opp den konverterte filen automatisk.",
+    project: { id: projectId, location: projectLocation },
+    upload: {
+      parentId,
+      fileName,
+      size: fileBuffer.length
+    },
+    attempts
+  });
+}
+
+async function handleUploadBinaryFile(body) {
+  const { token, projectId, projectLocation, parentId, fileName, base64 } = body;
+
+  if (!token || !projectId || !parentId || !fileName || typeof base64 !== "string") {
+    return jsonResponse(400, { ok: false, error: "Mangler token, projectId, parentId, fileName eller base64" });
+  }
+
+  const fileBuffer = Buffer.from(base64, "base64");
+  if (!fileBuffer.length) {
+    return jsonResponse(400, { ok: false, error: "base64 var tom eller ugyldig" });
+  }
+
+  const attempts = [];
+  const direct = await tryDirectMultipartUpload({
+    token,
+    projectLocation,
+    parentId,
+    fileName,
+    fileBuffer
+  });
+  attempts.push(direct);
+
+  if (direct.ok) {
+    return jsonResponse(200, {
+      ok: true,
+      action: "uploadBinaryFile",
+      project: { id: projectId, location: projectLocation },
+      upload: {
+        mode: direct.mode,
+        parentId,
+        fileName,
+        size: fileBuffer.length
+      },
+      response: direct.response,
+      diagnostics: direct.diagnostics
+    });
+  }
+
+  const signed = await trySignedUploadFlow({
+    token,
+    projectLocation,
+    parentId,
+    fileName,
+    fileBuffer
+  });
+  attempts.push(signed);
+
+  if (signed.ok) {
+    return jsonResponse(200, {
+      ok: true,
+      action: "uploadBinaryFile",
+      project: { id: projectId, location: projectLocation },
+      upload: {
+        mode: signed.mode,
+        parentId,
+        fileName,
+        size: fileBuffer.length
+      },
+      response: signed.response,
+      diagnostics: signed.diagnostics
+    });
+  }
+
+  return jsonResponse(200, {
+    ok: false,
+    action: "uploadBinaryFile",
+    error: "Kunne ikke laste opp ZIP-filen automatisk.",
     project: { id: projectId, location: projectLocation },
     upload: {
       parentId,
