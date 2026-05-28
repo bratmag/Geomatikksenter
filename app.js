@@ -7,7 +7,7 @@
     TOKEN_WAIT_MS: 30000,
     PROXY_URL: "/.netlify/functions/tc-proxy",
     APP_TITLE: "Geomatikksenter",
-    APP_BUILD: "20260528-field-data-root-jxl",
+    APP_BUILD: "20260528-lede-delivery-zip",
     JXL_ECEF_NN2000_GEOID_OFFSET_M: 40.3703,
     AUTO_CONVERT_ON_OPEN: false,
     IFC_POINT_OBJECT_HEIGHT_M: 1,
@@ -130,6 +130,17 @@
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
+  function triggerBlobDownload(filename, blob) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
   function getTxtFilename(filename) {
     const name = String(filename || "output.kof").trim() || "output.kof";
     return /\.kof$/i.test(name) ? name.replace(/\.kof$/i, ".txt") : `${name}.txt`;
@@ -148,6 +159,11 @@
   function getSosiFilename(filename) {
     const name = String(filename || "output.jxl").trim() || "output.jxl";
     return /\.(jxl|job|sos|sosi)$/i.test(name) ? name.replace(/\.(jxl|job|sos|sosi)$/i, ".sos") : `${name}.sos`;
+  }
+
+  function getDeliveryZipFilename(filename) {
+    const base = String(getSosiFilename(filename)).replace(/\.(sos|sosi)$/i, "") || "Lede-leveranse";
+    return `${base}.zip`;
   }
 
   function getUploadTargetFile() {
@@ -2325,6 +2341,175 @@
     return /\.(jpe?g|png|tiff?|webp|heic)$/i.test(String(value || "").trim());
   }
 
+  async function buildLedeDeliveryZip({ jxlText, sosiText, sosiName, assets = [] }) {
+    const manifest = getLedeDeliveryManifest(jxlText);
+    const entries = [{
+      path: `Sosifil/${sosiName}`,
+      data: new TextEncoder().encode(sosiText || "")
+    }];
+
+    for (const imageName of manifest.photoImages) {
+      const asset = findDeliveryAsset(assets, imageName);
+      if (!asset?.downloadUrl) continue;
+      entries.push({
+        path: `Bilder/${imageName}`,
+        data: await fetchDeliveryAssetBytes(asset)
+      });
+    }
+
+    for (const screenshotName of manifest.rootImages) {
+      const asset = findDeliveryAsset(assets, screenshotName);
+      if (!asset?.downloadUrl) continue;
+      entries.push({
+        path: screenshotName,
+        data: await fetchDeliveryAssetBytes(asset)
+      });
+    }
+
+    return createZipBlob(entries);
+  }
+
+  function getLedeDeliveryManifest(jxlText) {
+    const xml = repairUtf8Mojibake(String(jxlText || ""));
+    const doc = new DOMParser().parseFromString(xml, "application/xml");
+    const photoImages = uniqueNames(xmlElements(doc, "Attribute")
+      .filter((attribute) => jxlDirectText(attribute, "Name") === "FOTO")
+      .map((attribute) => basename(jxlDirectText(attribute, "Value")))
+      .filter(isImageFilename));
+    const photoKey = new Set(photoImages.map(normalizeAssetKey));
+    const rootImages = uniqueNames(xmlElements(doc, "FileName")
+      .map((node) => basename(node.textContent || ""))
+      .filter(isImageFilename)
+      .filter((name) => !photoKey.has(normalizeAssetKey(name))));
+    return { photoImages, rootImages };
+  }
+
+  function summarizeDeliveryAssets(jxlText, assets) {
+    const manifest = getLedeDeliveryManifest(jxlText);
+    return {
+      photos: manifest.photoImages,
+      rootImages: manifest.rootImages,
+      available: assets.map((asset) => ({
+        fileName: asset.fileName || null,
+        sourceLabel: asset.sourceLabel || null,
+        hasDownloadUrl: Boolean(asset.downloadUrl)
+      }))
+    };
+  }
+
+  function findDeliveryAsset(assets, fileName) {
+    const wanted = normalizeAssetKey(fileName);
+    return assets.find((asset) => normalizeAssetKey(basename(asset.fileName || "")) === wanted) || null;
+  }
+
+  async function fetchDeliveryAssetBytes(asset) {
+    const res = await fetch(asset.downloadUrl);
+    if (!res.ok) throw new Error(`Kunne ikke laste ned ${asset.fileName || "bildefil"} (${res.status})`);
+    return new Uint8Array(await res.arrayBuffer());
+  }
+
+  function basename(value) {
+    return String(value || "").split(/[\\/]/).filter(Boolean).pop() || "";
+  }
+
+  function uniqueNames(names) {
+    const seen = new Set();
+    const out = [];
+    for (const name of names) {
+      const key = normalizeAssetKey(name);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      out.push(name);
+    }
+    return out;
+  }
+
+  function normalizeAssetKey(value) {
+    return basename(value).toLowerCase();
+  }
+
+  function createZipBlob(entries) {
+    const parts = [];
+    const centralParts = [];
+    let offset = 0;
+
+    for (const entry of entries) {
+      const data = entry.data instanceof Uint8Array ? entry.data : new Uint8Array(entry.data || []);
+      const nameBytes = new TextEncoder().encode(entry.path.replace(/\\/g, "/"));
+      const crc = crc32(data);
+      const { time, date } = zipDosDateTime(new Date());
+
+      const local = new Uint8Array(30 + nameBytes.length);
+      const localView = new DataView(local.buffer);
+      localView.setUint32(0, 0x04034b50, true);
+      localView.setUint16(4, 20, true);
+      localView.setUint16(6, 0x0800, true);
+      localView.setUint16(8, 0, true);
+      localView.setUint16(10, time, true);
+      localView.setUint16(12, date, true);
+      localView.setUint32(14, crc, true);
+      localView.setUint32(18, data.length, true);
+      localView.setUint32(22, data.length, true);
+      localView.setUint16(26, nameBytes.length, true);
+      local.set(nameBytes, 30);
+      parts.push(local, data);
+
+      const central = new Uint8Array(46 + nameBytes.length);
+      const centralView = new DataView(central.buffer);
+      centralView.setUint32(0, 0x02014b50, true);
+      centralView.setUint16(4, 20, true);
+      centralView.setUint16(6, 20, true);
+      centralView.setUint16(8, 0x0800, true);
+      centralView.setUint16(10, 0, true);
+      centralView.setUint16(12, time, true);
+      centralView.setUint16(14, date, true);
+      centralView.setUint32(16, crc, true);
+      centralView.setUint32(20, data.length, true);
+      centralView.setUint32(24, data.length, true);
+      centralView.setUint16(28, nameBytes.length, true);
+      centralView.setUint32(42, offset, true);
+      central.set(nameBytes, 46);
+      centralParts.push(central);
+
+      offset += local.length + data.length;
+    }
+
+    const centralOffset = offset;
+    const centralSize = centralParts.reduce((sum, part) => sum + part.length, 0);
+    const end = new Uint8Array(22);
+    const endView = new DataView(end.buffer);
+    endView.setUint32(0, 0x06054b50, true);
+    endView.setUint16(8, entries.length, true);
+    endView.setUint16(10, entries.length, true);
+    endView.setUint32(12, centralSize, true);
+    endView.setUint32(16, centralOffset, true);
+    return new Blob([...parts, ...centralParts, end], { type: "application/zip" });
+  }
+
+  function zipDosDateTime(date) {
+    const year = Math.max(1980, date.getFullYear());
+    return {
+      time: (date.getHours() << 11) | (date.getMinutes() << 5) | Math.floor(date.getSeconds() / 2),
+      date: ((year - 1980) << 9) | ((date.getMonth() + 1) << 5) | date.getDate()
+    };
+  }
+
+  const CRC32_TABLE = (() => {
+    const table = new Uint32Array(256);
+    for (let i = 0; i < 256; i += 1) {
+      let c = i;
+      for (let k = 0; k < 8; k += 1) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+      table[i] = c >>> 0;
+    }
+    return table;
+  })();
+
+  function crc32(bytes) {
+    let crc = 0xffffffff;
+    for (const byte of bytes) crc = CRC32_TABLE[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+    return (crc ^ 0xffffffff) >>> 0;
+  }
+
   function appendSosiCoordLines(lines, coords) {
     lines.push("..NØH");
     for (const coord of coords) {
@@ -3579,34 +3764,31 @@
         fileName: prepared.jxlName,
         producer: state.deliveryProducer
       });
-      const outName = getSosiFilename(prepared.jxlName);
+      const sosiName = getSosiFilename(prepared.jxlName);
+      const outName = getDeliveryZipFilename(prepared.jxlName);
       state.lastDownloadName = outName;
       state.lastResult = { file: prepared.sourceFile, text: prepared.text || "" };
 
       let uploadResult = { ok: false, skipped: true, error: "Fant ikke prosjektmappe for automatisk opplasting." };
-      if (prepared.sourceFile?.parentId) {
-        uploadResult = await uploadConvertedTxtToProject({
-          sourceFile: prepared.sourceFile,
-          outName,
-          txt: converted.text
-        });
-      }
+      const zipBlob = await buildLedeDeliveryZip({
+        jxlText: prepared.text || "",
+        sosiText: converted.text,
+        sosiName,
+        assets: prepared.assets || []
+      });
       state.lastUploadResult = uploadResult;
 
-      if (uploadResult.ok) {
-        setStatus(`Ferdig: ${outName} er lastet opp til prosjektet`, "success");
-      } else {
-        triggerDownload(outName, converted.text);
-        setStatus(`Ferdig: ${outName} er lastet ned lokalt`, "success");
-      }
-      showHint(`Lede SOSI er klargjort med ${converted.stats.points} punkt og ${converted.stats.curves} kurver.`);
+      triggerBlobDownload(outName, zipBlob);
+      setStatus(`Ferdig: ${outName} er lastet ned lokalt`, "success");
+      showHint(`Lede-leveranse er klargjort med SOSI, bilder og skjermbilde der de finnes. SOSI inneholder ${converted.stats.points} punkt og ${converted.stats.curves} kurver.`);
       setDebug({
         action: "processLedeSosiDelivery",
         source,
         outName,
+        sosiName,
         producer: state.deliveryProducer,
         stats: converted.stats,
-        uploadResult,
+        assets: summarizeDeliveryAssets(prepared.text || "", prepared.assets || []),
         appBuild: CONFIG.APP_BUILD
       });
     } catch (err) {
@@ -3659,7 +3841,8 @@
         name: jxlName,
         parentId: result.uploadParentId || null,
         path: "Field Data"
-      }
+      },
+      assets: Array.isArray(result.assets) ? result.assets : []
     };
   }
 

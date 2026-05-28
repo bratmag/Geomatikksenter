@@ -1281,6 +1281,7 @@ async function handleGetFieldDataJxl(body) {
 
   const uploadParent = await resolveProjectUploadParent({ token, projectId, projectLocation });
   diagnostics.push(...uploadParent.diagnostics);
+  const assets = await listFieldDataImageAssets({ token, projectId, jobId: job.id, diagnostics });
 
   return jsonResponse(200, {
     ok: true,
@@ -1296,6 +1297,7 @@ async function handleGetFieldDataJxl(body) {
     },
     uploadParentId: uploadParent.parentId,
     uploadParentSource: uploadParent.source,
+    assets,
     text: jxlRes.text,
     diagnostics
   });
@@ -1857,6 +1859,47 @@ function isPreferredFieldDataJxlFile(file, existing) {
 function getFieldDataRootJxlCandidates(job) {
   const root = normalizeFieldDataJxlFile(job?.rootDataFileJxl, "rootDataFileJxl");
   return root ? [root] : [];
+}
+
+async function listFieldDataImageAssets({ token, projectId, jobId, diagnostics }) {
+  if (!jobId) return [];
+  const encodedProjectId = encodeURIComponent(projectId);
+  const detailUrl = `https://eu.api.maps.trimblegeospatial.com/projects/${encodedProjectId}/surveyjobs/${jobId}?includeAttachments=true`;
+  const detailRes = await fetchFieldDataJson(detailUrl, token);
+  diagnostics.push({
+    name: "surveyjob-assets-detail",
+    url: detailUrl,
+    ok: detailRes.ok,
+    status: detailRes.status,
+    preview: shortText(detailRes.text, 700)
+  });
+  if (!detailRes.ok || !detailRes.json) return [];
+  return extractFieldDataImageFiles(detailRes.json);
+}
+
+function extractFieldDataImageFiles(job) {
+  const out = [];
+  const seen = new Set();
+  walkFieldDataImageFiles(job, [], out, seen);
+  return out;
+}
+
+function walkFieldDataImageFiles(node, pathParts, out, seen) {
+  if (node == null) return;
+  if (Array.isArray(node)) {
+    for (const item of node) walkFieldDataImageFiles(item, pathParts, out, seen);
+    return;
+  }
+  if (typeof node !== "object") return;
+
+  const file = normalizeFieldDataFile(node, pathParts.join(" / "), /\.(jpe?g|png|tiff?|webp|heic)$/i);
+  addFieldDataJxlFile(out, seen, file);
+
+  for (const [key, value] of Object.entries(node)) {
+    if (value && typeof value === "object") {
+      walkFieldDataImageFiles(value, pathParts.concat(key), out, seen);
+    }
+  }
 }
 
 function extractFieldDataJxlFiles(job) {
