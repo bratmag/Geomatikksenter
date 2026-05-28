@@ -274,7 +274,7 @@
     const projectUploadBtn = el("button", null, "Trimble Connect datautforsker");
     const localFileInput = document.createElement("input");
     localFileInput.type = "file";
-    localFileInput.accept = ".kof,.sos,.sosi,.gml,.jxl,.job,text/plain,application/gml+xml,application/xml";
+    localFileInput.accept = ".kof,.sos,.sosi,.gml,.jxl,text/plain,application/gml+xml,application/xml";
     localFileInput.style.display = "none";
     stopBtn.style.display = "none";
     convertManualBtn.style.display = "";
@@ -296,7 +296,7 @@
     const jxlHeader = el("div", "card-header", [
       el("div", null, [
         el("div", "label", "Feltdata"),
-        el("div", "subtitle", "JXL/JOB-eksporter fra Field Data og målebok.")
+        el("div", "subtitle", "JXL-eksporter fra Field Data og målebok.")
       ])
     ]);
     const jxlCount = el("div", "file-count", "");
@@ -578,11 +578,11 @@
     if (!ui.jxlList) return;
     ui.jxlList.innerHTML = "";
     ui.jxlCount.textContent = state.jxlSources.length
-      ? `${state.jxlSources.length} JXL/JOB-kilde${state.jxlSources.length === 1 ? "" : "r"}`
+      ? `${state.jxlSources.length} JXL-kilde${state.jxlSources.length === 1 ? "" : "r"}`
       : "";
 
     if (!state.jxlSources.length) {
-      ui.jxlList.appendChild(el("div", "empty-state", "Trykk \"Oppdater feltdata\" for å hente JXL/JOB fra Field Data."));
+      ui.jxlList.appendChild(el("div", "empty-state", "Trykk \"Oppdater feltdata\" for å hente JXL fra Field Data."));
       setBusy(state.busy);
       return;
     }
@@ -1028,7 +1028,7 @@
     const name = String(fileName || "");
     const text = String(sourceText || "");
 
-    if (/\.(jxl|job)$/i.test(name)) return "jxl";
+    if (/\.jxl$/i.test(name)) return "jxl";
     if (/<(?:\w+:)?(JOBFile|PointRecord|LivePolylineRecord)\b/i.test(text)) return "jxl";
     if (/\.gml$/i.test(name)) return "gml";
     if (/<(?:\w+:)?FeatureCollection\b/i.test(text) || /<(?:\w+:)?(LineString|Point|Polygon)\b/i.test(text)) return "gml";
@@ -3107,7 +3107,7 @@
 
   function getExpectedOutputExtensions(file) {
     const name = String(file?.name || "").toLowerCase();
-    if (name.endsWith(".gml") || name.endsWith(".jxl") || name.endsWith(".job")) {
+    if (name.endsWith(".gml") || name.endsWith(".jxl")) {
       return [".ifc"];
     }
     if (name.endsWith(".sos") || name.endsWith(".sosi")) return [".xml"];
@@ -3384,7 +3384,7 @@
       setBusy(true);
       showHint(null, false);
       await ensureReady();
-      setStatus("Henter JXL/JOB fra Connect Explorer og Field Data...", "working");
+      setStatus("Henter JXL fra Connect Explorer og Field Data...", "working");
 
       const proxyRes = await callProxy("listJxlSources", {
         token: state.accessToken,
@@ -3404,9 +3404,9 @@
       renderJxlList();
 
       if (state.jxlSources.length) {
-        setStatus(`Fant ${state.jxlSources.length} JXL/JOB-kilde${state.jxlSources.length === 1 ? "" : "r"}`, "success");
+        setStatus(`Fant ${state.jxlSources.length} JXL-kilde${state.jxlSources.length === 1 ? "" : "r"}`, "success");
       } else {
-        setStatus("Fant ingen JXL/JOB-kilder i Connect Explorer eller Field Data", "neutral");
+        setStatus("Fant ingen JXL-kilder i Connect Explorer eller Field Data", "neutral");
       }
       setDebug(result);
     } catch (err) {

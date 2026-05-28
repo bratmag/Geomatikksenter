@@ -1247,10 +1247,15 @@ async function handleGetFieldDataJxl(body) {
     return jsonResponse(200, {
       ok: false,
       action: "getFieldDataJxl",
-      error: "Jobben mangler en JXL/JOB-fil med downloadUrl.",
+      error: "Jobben finnes, men JXL-filen er ikke klar ennå. Field Data lager normalt en .jxl fra RootDataFile .job etter litt tid.",
       job: summarizeFieldDataJob(detail),
       jxlCandidates: jxlCandidates.map((file) => ({
         id: file.id || null,
+        fileName: file.fileName || null,
+        sourceLabel: file.sourceLabel || null,
+        hasDownloadUrl: Boolean(file.downloadUrl)
+      })),
+      availableJobFiles: extractFieldDataJobFiles(detail).map((file) => ({
         fileName: file.fileName || null,
         sourceLabel: file.sourceLabel || null,
         hasDownloadUrl: Boolean(file.downloadUrl)
@@ -1830,8 +1835,9 @@ async function mapWithConcurrency(items, limit, mapper) {
 
 function addFieldDataJxlEntry(entriesByKey, job, file) {
   if (!job?.id || !file?.fileName) return;
-  const key = `${job.id}|${file.id || ""}|${file.fileName}|${file.downloadUrl || ""}`;
-  if (entriesByKey.has(key)) return;
+  const key = `${job.id}|${normalizeFieldDataName(file.fileName)}`;
+  const existing = entriesByKey.get(key);
+  if (existing && !isPreferredFieldDataJxlFile(file, existing)) return;
   entriesByKey.set(key, {
     id: job.id,
     sourceId: `${job.id}:${file.id || file.fileName}`,
@@ -1845,6 +1851,14 @@ function addFieldDataJxlEntry(entriesByKey, job, file) {
   });
 }
 
+function isPreferredFieldDataJxlFile(file, existing) {
+  const source = String(file?.sourceLabel || "");
+  const existingSource = String(existing?.sourceLabel || "");
+  if (/rootDataFileJxl/i.test(source) && !/rootDataFileJxl/i.test(existingSource)) return true;
+  if (!/rootDataFileJxl/i.test(source) && /rootDataFileJxl/i.test(existingSource)) return false;
+  return String(file?.updatedUtc || "").localeCompare(String(existing?.jxlUpdatedUtc || "")) > 0;
+}
+
 function extractFieldDataJxlFiles(job) {
   const out = [];
   const seen = new Set();
@@ -1854,6 +1868,31 @@ function extractFieldDataJxlFiles(job) {
     String(b.updatedUtc || "").localeCompare(String(a.updatedUtc || "")) ||
     String(a.fileName || "").localeCompare(String(b.fileName || ""), undefined, { sensitivity: "base" })
   );
+}
+
+function extractFieldDataJobFiles(job) {
+  const out = [];
+  const seen = new Set();
+  walkFieldDataJobFiles(job, [], out, seen);
+  return out;
+}
+
+function walkFieldDataJobFiles(node, pathParts, out, seen) {
+  if (node == null) return;
+  if (Array.isArray(node)) {
+    for (const item of node) walkFieldDataJobFiles(item, pathParts, out, seen);
+    return;
+  }
+  if (typeof node !== "object") return;
+
+  const file = normalizeFieldDataFile(node, pathParts.join(" / "), /\.job$/i);
+  addFieldDataJxlFile(out, seen, file);
+
+  for (const [key, value] of Object.entries(node)) {
+    if (value && typeof value === "object") {
+      walkFieldDataJobFiles(value, pathParts.concat(key), out, seen);
+    }
+  }
 }
 
 function walkFieldDataJxlFiles(node, pathParts, out, seen) {
@@ -1868,7 +1907,6 @@ function walkFieldDataJxlFiles(node, pathParts, out, seen) {
   addFieldDataJxlFile(out, seen, file);
 
   for (const [key, value] of Object.entries(node)) {
-    if (key === "rootDataFileJxl") continue;
     if (value && typeof value === "object") {
       walkFieldDataJxlFiles(value, pathParts.concat(key), out, seen);
     }
@@ -1876,9 +1914,13 @@ function walkFieldDataJxlFiles(node, pathParts, out, seen) {
 }
 
 function normalizeFieldDataJxlFile(node, sourceLabel) {
+  return normalizeFieldDataFile(node, sourceLabel, /\.jxl$/i);
+}
+
+function normalizeFieldDataFile(node, sourceLabel, filePattern) {
   if (!node || typeof node !== "object") return null;
   const fileName = node.fileName || node.filename || node.name || node.title || null;
-  if (!/\.(jxl|job)$/i.test(String(fileName || ""))) return null;
+  if (!filePattern.test(String(fileName || ""))) return null;
 
   const downloadUrl =
     node.downloadUrl ||
