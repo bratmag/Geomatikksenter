@@ -7,7 +7,7 @@
     TOKEN_WAIT_MS: 30000,
     PROXY_URL: "/.netlify/functions/tc-proxy",
     APP_TITLE: "Geomatikksenter",
-    APP_BUILD: "20260528-upload-delivery-zip",
+    APP_BUILD: "20260528-delivery-default-tab",
     JXL_ECEF_NN2000_GEOID_OFFSET_M: 40.3703,
     AUTO_CONVERT_ON_OPEN: false,
     IFC_POINT_OBJECT_HEIGHT_M: 1,
@@ -91,7 +91,6 @@
     }
     if (ui.localUploadBtn) ui.localUploadBtn.disabled = busy;
     if (ui.jxlRefreshBtn) ui.jxlRefreshBtn.disabled = busy;
-    if (ui.jxlConvertBtn) ui.jxlConvertBtn.disabled = busy || !state.selectedJxlSource;
     if (ui.projectUploadBtn) ui.projectUploadBtn.disabled = busy || !canOpenProjectUpload();
     if (ui.deliveryRunBtn) ui.deliveryRunBtn.disabled = busy || !state.selectedJxlSource;
   }
@@ -261,10 +260,10 @@
     titleCard.appendChild(el("div", "subtitle", "Verktøy for feltdata, prosjektdata og digitale dataleveranser."));
 
     const tabsCard = el("div", "card tabs-card");
-    const projectTabBtn = el("button", "primary", "Prosjektdata");
+    const deliveryTabBtn = el("button", "primary", "Dataleveranse");
+    const projectTabBtn = el("button", null, "Prosjektdata");
     const fieldTabBtn = el("button", null, "Feltdata");
-    const deliveryTabBtn = el("button", null, "Dataleveranse");
-    tabsCard.appendChild(el("div", "btn-row", [projectTabBtn, fieldTabBtn, deliveryTabBtn]));
+    tabsCard.appendChild(el("div", "btn-row", [deliveryTabBtn, projectTabBtn, fieldTabBtn]));
 
     const projectCard = el("div", "card");
     projectCard.appendChild(el("div", "label", "Prosjekt"));
@@ -320,10 +319,7 @@
     jxlCard.appendChild(jxlHeader);
     const jxlBtnRow = el("div", "btn-row");
     const jxlRefreshBtn = el("button", "primary", "Oppdater feltdata");
-    const jxlConvertBtn = el("button", null, "Konverter valgt JXL til IFC");
-    jxlConvertBtn.disabled = true;
     jxlBtnRow.appendChild(jxlRefreshBtn);
-    jxlBtnRow.appendChild(jxlConvertBtn);
     jxlCard.appendChild(jxlBtnRow);
     const jxlList = el("div", "file-list");
     jxlCard.appendChild(jxlList);
@@ -365,7 +361,7 @@
     producerLabel.appendChild(deliveryProducerInput);
     deliveryOptions.appendChild(producerLabel);
     deliveryCard.appendChild(deliveryOptions);
-    const deliveryBtnRow = el("div", "btn-row");
+    const deliveryBtnRow = el("div", "btn-row delivery-actions");
     const deliveryRunBtn = el("button", null, "Klargjør leveranse");
     deliveryRunBtn.disabled = true;
     deliveryBtnRow.appendChild(deliveryRunBtn);
@@ -432,7 +428,6 @@
       jxlCard,
       jxlCount,
       jxlRefreshBtn,
-      jxlConvertBtn,
       jxlList,
       filesCard,
       deliveryCard,
@@ -4120,7 +4115,7 @@
       if (typeof token === "string" && token && token !== "pending" && token !== "denied") {
         setAccessToken(token);
         if (!state.busy) {
-          setTimeout(() => refreshKofListOnOpen("access-token").catch(() => {}), 0);
+          setTimeout(() => refreshActiveViewOnOpen("access-token").catch(() => {}), 0);
         }
       }
       return;
@@ -4129,10 +4124,18 @@
       const command = args?.data || null;
       if (command === CONFIG.MENU_MAIN_COMMAND || command === CONFIG.MENU_OPEN_COMMAND) {
         setStatus(`${CONFIG.APP_TITLE} åpnet fra meny`, "neutral");
-        refreshKofListOnOpen("menu").catch(() => {});
+        refreshActiveViewOnOpen("menu").catch(() => {});
       }
       return;
     }
+  }
+
+  async function refreshActiveViewOnOpen(reason) {
+    if (state.activeView === "project") {
+      await refreshKofListOnOpen(reason);
+      return;
+    }
+    await refreshJxlSources();
   }
 
   function wireUi() {
@@ -4149,7 +4152,6 @@
     ui.stopBtn.addEventListener("click", requestStopConversion);
     ui.convertManualBtn.addEventListener("click", processManualSelectedFiles);
     ui.jxlRefreshBtn.addEventListener("click", refreshJxlSources);
-    ui.jxlConvertBtn.addEventListener("click", processSelectedJxlSource);
     ui.deliveryProducerInput.addEventListener("input", (event) => setStoredDeliveryProducer(event.target.value));
     ui.deliveryRunBtn.addEventListener("click", processLedeSosiDelivery);
     ui.localUploadBtn.addEventListener("click", () => ui.localFileInput.click());
@@ -4164,15 +4166,15 @@
       wireUi();
       renderFileList();
       renderJxlList();
-      switchView("project");
+      switchView("delivery");
 
       setStatus("Starter...", "working");
       await connectWorkspace();
       await ensureMenu();
 
-      setStatus("Klar - laster liste automatisk...", "working");
+      setStatus("Klar - laster feltdata automatisk...", "working");
       setTimeout(() => {
-        refreshKofListOnOpen("init").catch(() => {});
+        refreshActiveViewOnOpen("init").catch(() => {});
       }, 0);
 
       window.kof2txt = {
@@ -4182,8 +4184,6 @@
         processSelectedFile,
         processManualSelectedFiles,
         refreshJxlSources,
-        processSelectedJxlSource,
-        processFieldDataJxl,
         processLedeSosiDelivery,
         processAllFiles,
         requestStopConversion,
