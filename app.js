@@ -7,7 +7,7 @@
     TOKEN_WAIT_MS: 30000,
     PROXY_URL: "/.netlify/functions/tc-proxy",
     APP_TITLE: "Geomatikksenter",
-    APP_BUILD: "20260528-lede-sosi-delivery",
+    APP_BUILD: "20260528-field-data-root-jxl",
     JXL_ECEF_NN2000_GEOID_OFFSET_M: 40.3703,
     AUTO_CONVERT_ON_OPEN: false,
     IFC_POINT_OBJECT_HEIGHT_M: 1,

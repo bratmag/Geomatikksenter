@@ -1214,7 +1214,7 @@ async function handleGetFieldDataJxl(body) {
     });
   }
 
-  const detailUrl = `https://eu.api.maps.trimblegeospatial.com/projects/${encodedProjectId}/surveyjobs/${job.id}?includeAttachments=true`;
+  const detailUrl = `https://eu.api.maps.trimblegeospatial.com/projects/${encodedProjectId}/surveyjobs/${job.id}?includeAttachments=false`;
   const detailRes = await fetchFieldDataJson(detailUrl, token);
   diagnostics.push({
     name: "surveyjob-detail",
@@ -1235,7 +1235,7 @@ async function handleGetFieldDataJxl(body) {
   }
 
   const detail = detailRes.json;
-  const jxlCandidates = extractFieldDataJxlFiles(detail);
+  const jxlCandidates = getFieldDataRootJxlCandidates(detail);
   const wantedFileName = normalizeFieldDataName(jxlFileName || "");
   const wantedFileId = jxlFileId ? String(jxlFileId) : "";
   const jxlFile =
@@ -1251,11 +1251,6 @@ async function handleGetFieldDataJxl(body) {
       job: summarizeFieldDataJob(detail),
       jxlCandidates: jxlCandidates.map((file) => ({
         id: file.id || null,
-        fileName: file.fileName || null,
-        sourceLabel: file.sourceLabel || null,
-        hasDownloadUrl: Boolean(file.downloadUrl)
-      })),
-      availableJobFiles: extractFieldDataJobFiles(detail).map((file) => ({
         fileName: file.fileName || null,
         sourceLabel: file.sourceLabel || null,
         hasDownloadUrl: Boolean(file.downloadUrl)
@@ -1796,7 +1791,7 @@ async function enrichFieldDataJxlJobs({ token, projectId, jobs, diagnostics }) {
   const entriesByKey = new Map();
 
   await mapWithConcurrency(jobsToInspect, 4, async (job) => {
-    const detailUrl = `https://eu.api.maps.trimblegeospatial.com/projects/${encodedProjectId}/surveyjobs/${job.id}?includeAttachments=true`;
+    const detailUrl = `https://eu.api.maps.trimblegeospatial.com/projects/${encodedProjectId}/surveyjobs/${job.id}?includeAttachments=false`;
     const detailRes = await fetchFieldDataJson(detailUrl, token);
     diagnostics.push({
       name: `field-data-jxl-detail:${job.name || job.id}`,
@@ -1812,7 +1807,7 @@ async function enrichFieldDataJxlJobs({ token, projectId, jobs, diagnostics }) {
       name: detailRes.json.name || job.name,
       updatedUtc: detailRes.json.updatedUtc || detailRes.json.UpdatedUtc || job.updatedUtc
     };
-    for (const file of extractFieldDataJxlFiles(detailRes.json)) {
+    for (const file of getFieldDataRootJxlCandidates(detailRes.json)) {
       addFieldDataJxlEntry(entriesByKey, detailJob, file);
     }
   });
@@ -1857,6 +1852,11 @@ function isPreferredFieldDataJxlFile(file, existing) {
   if (/rootDataFileJxl/i.test(source) && !/rootDataFileJxl/i.test(existingSource)) return true;
   if (!/rootDataFileJxl/i.test(source) && /rootDataFileJxl/i.test(existingSource)) return false;
   return String(file?.updatedUtc || "").localeCompare(String(existing?.jxlUpdatedUtc || "")) > 0;
+}
+
+function getFieldDataRootJxlCandidates(job) {
+  const root = normalizeFieldDataJxlFile(job?.rootDataFileJxl, "rootDataFileJxl");
+  return root ? [root] : [];
 }
 
 function extractFieldDataJxlFiles(job) {
