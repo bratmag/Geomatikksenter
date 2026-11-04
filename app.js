@@ -7,7 +7,7 @@
     TOKEN_WAIT_MS: 30000,
     PROXY_URL: "/.netlify/functions/tc-proxy",
     APP_TITLE: "Geomatikksenter",
-    APP_BUILD: "20261104-field-sort",
+    APP_BUILD: "20261104-built-in-geoids",
     JXL_ECEF_NN2000_GEOID_OFFSET_M: 40.3703,
     AUTO_CONVERT_ON_OPEN: false,
     IFC_POINT_OBJECT_HEIGHT_M: 1,
@@ -3742,11 +3742,12 @@
         fileId: fxl.id, fileName: fxl.name
       });
       if (!response.ok || !response.json?.ok) throw new Error(response.json?.error || "Kunne ikke laste ned valgt FXL.");
-      const converted = GeminiJxl.convert(prepared.text, response.json.text || "");
+      const coordinates = await JobXmlCoordinates.prepare(prepared.text);
+      const converted = GeminiJxl.convert(coordinates.text, response.json.text || "");
       const outName = String(prepared.jxlName || "jobb.jxl").replace(/\.(jxl|job)$/i, "") + " - Gemini.jxl";
       triggerDownload(outName, converted.text);
       setStatus(`Lastet ned ${outName}: ${converted.stats.lines} linjer, ${converted.stats.parts} delstrekninger.`, "success");
-      setDebug({ action: "geminiDownload", source: source.id, fxl: fxl.name, outName, stats: converted.stats });
+      setDebug({ action: "geminiDownload", source: source.id, fxl: fxl.name, outName, stats: converted.stats, coordinates: { repaired: coordinates.repaired, model: coordinates.model || null, points: coordinates.points } });
     } catch (err) {
       setStatus(`JobXML zigzag: ${err.message || String(err)}`, "error");
       setDebug({ action: "geminiDownload", error: err.message || String(err) });

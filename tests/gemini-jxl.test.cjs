@@ -70,7 +70,7 @@ const testdata = path.join(fixtureRoot, 'Gemini-JXL-normalisering', 'testdata');
         return route.fulfill({ json: result });
       }
       const name = url.pathname === '/' ? 'index.html' : url.pathname.slice(1);
-      if (['index.html', 'app.js', 'gemini-jxl.js'].includes(name)) return route.fulfill({ body: read(name), contentType: name.endsWith('.js') ? 'text/javascript' : 'text/html' });
+      if (['index.html', 'app.js', 'gemini-jxl.js', 'jobxml-coordinates.js'].includes(name)) return route.fulfill({ body: read(name), contentType: name.endsWith('.js') ? 'text/javascript' : 'text/html' });
       return route.fulfill({ status: 404, body: '' });
     });
     await page.route('https://components.connect.trimble.com/**', route => route.fulfill({ body: '', contentType: 'text/javascript' }));
