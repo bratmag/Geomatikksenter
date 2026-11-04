@@ -1635,6 +1635,7 @@ async function traverseProjectExplorer({ token, projectLocation, rootFolderId })
   const allFilesByKey = new Map();
   const folderQueue = [{ id: rootFolderId, name: "Prosjekt", parentId: null, pathParts: [] }];
   const visitedFolders = new Set();
+  let listingFailed = false;
 
   foldersById.set(rootFolderId, {
     id: rootFolderId,
@@ -1658,7 +1659,7 @@ async function traverseProjectExplorer({ token, projectLocation, rootFolderId })
       status: res.status,
       preview: shortText(res.text, 400)
     });
-    if (!res.ok || !res.json) continue;
+    if (!res.ok || !res.json) { listingFailed = true; continue; }
 
     const items = normalizeItemsFromAnyResponse(res.json, current.pathParts);
     for (const item of items) {
@@ -1720,7 +1721,7 @@ async function traverseProjectExplorer({ token, projectLocation, rootFolderId })
   );
 
   return {
-    ok: folders.length > 0 || files.length > 0,
+    ok: !listingFailed,
     folders,
     files,
     convertedFiles,
@@ -1871,7 +1872,7 @@ function findExistingConvertedOutputs(file, convertedFiles) {
 
 async function enrichFieldDataJxlJobs({ token, projectId, jobs, diagnostics }) {
   const encodedProjectId = encodeURIComponent(projectId);
-  const jobsToInspect = jobs.slice(0, 40);
+  const jobsToInspect = jobs;
   const entriesByKey = new Map();
 
   await mapWithConcurrency(jobsToInspect, 4, async (job) => {
@@ -1884,14 +1885,19 @@ async function enrichFieldDataJxlJobs({ token, projectId, jobs, diagnostics }) {
       status: detailRes.status,
       preview: shortText(detailRes.text, 500)
     });
-    if (!detailRes.ok || !detailRes.json) return;
+    if (!detailRes.ok || !detailRes.json) {
+      entriesByKey.set(`${job.id}|pending`, { ...job, sourceId: `${job.id}:pending` });
+      return;
+    }
 
     const detailJob = {
       ...job,
       name: detailRes.json.name || job.name,
       updatedUtc: detailRes.json.updatedUtc || detailRes.json.UpdatedUtc || job.updatedUtc
     };
-    for (const file of getFieldDataRootJxlCandidates(detailRes.json)) {
+    const candidates = getFieldDataRootJxlCandidates(detailRes.json);
+    if (!candidates.length) entriesByKey.set(`${job.id}|pending`, { ...detailJob, sourceId: `${job.id}:pending` });
+    for (const file of candidates) {
       addFieldDataJxlEntry(entriesByKey, detailJob, file);
     }
   });

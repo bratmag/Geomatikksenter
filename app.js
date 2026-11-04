@@ -7,7 +7,7 @@
     TOKEN_WAIT_MS: 30000,
     PROXY_URL: "/.netlify/functions/tc-proxy",
     APP_TITLE: "Geomatikksenter",
-    APP_BUILD: "20260528-delivery-default-tab",
+    APP_BUILD: "20261104-gemini-jxl",
     JXL_ECEF_NN2000_GEOID_OFFSET_M: 40.3703,
     AUTO_CONVERT_ON_OPEN: false,
     IFC_POINT_OBJECT_HEIGHT_M: 1,
@@ -29,6 +29,8 @@
     activeView: "project",
     jxlSources: [],
     selectedJxlSource: null,
+    geminiFxlFiles: [],
+    geminiFxlError: "",
     deliveryProducer: "",
     tokenWaiters: [],
     isEmbedded: false,
@@ -91,6 +93,8 @@
     }
     if (ui.localUploadBtn) ui.localUploadBtn.disabled = busy;
     if (ui.jxlRefreshBtn) ui.jxlRefreshBtn.disabled = busy;
+    if (ui.geminiRunBtn) ui.geminiRunBtn.disabled = busy || !state.selectedJxlSource || !state.geminiFxlFiles.length;
+    if (ui.geminiFxlSelect) ui.geminiFxlSelect.disabled = busy;
     if (ui.projectUploadBtn) ui.projectUploadBtn.disabled = busy || !canOpenProjectUpload();
     if (ui.deliveryRunBtn) ui.deliveryRunBtn.disabled = busy || !state.selectedJxlSource;
   }
@@ -113,7 +117,7 @@
   }
 
   function triggerDownload(filename, text) {
-    const mimeType = /\.xml$/i.test(String(filename || ""))
+    const mimeType = /\.(xml|jxl)$/i.test(String(filename || ""))
       ? "application/xml;charset=utf-8"
       : /\.ifc$/i.test(String(filename || ""))
         ? "application/x-step;charset=utf-8"
@@ -320,7 +324,17 @@
     const jxlBtnRow = el("div", "btn-row");
     const jxlRefreshBtn = el("button", "primary", "Oppdater feltdata");
     jxlBtnRow.appendChild(jxlRefreshBtn);
+    const geminiRunBtn = el("button", "primary", "JobXML zigzag");
+    jxlBtnRow.appendChild(geminiRunBtn);
     jxlCard.appendChild(jxlBtnRow);
+    const geminiFxlLabel = el("label", "field-label");
+    geminiFxlLabel.appendChild(el("span", null, "Kodeliste (FXL)"));
+    const geminiFxlSelect = document.createElement("select");
+    geminiFxlSelect.setAttribute("aria-label", "Kodeliste for JobXML zigzag");
+    geminiFxlLabel.appendChild(geminiFxlSelect);
+    jxlCard.appendChild(geminiFxlLabel);
+    const geminiFxlStatus = el("div", "subtitle", "Oppdater feltdata for å finne prosjektets kodeliste.");
+    jxlCard.appendChild(geminiFxlStatus);
     const jxlList = el("div", "file-list");
     jxlCard.appendChild(jxlList);
 
@@ -428,6 +442,9 @@
       jxlCard,
       jxlCount,
       jxlRefreshBtn,
+      geminiRunBtn,
+      geminiFxlSelect,
+      geminiFxlStatus,
       jxlList,
       filesCard,
       deliveryCard,
@@ -602,12 +619,12 @@
       const isSelected = state.selectedJxlSource?.id === source.id && state.selectedJxlSource?.sourceType === source.sourceType;
       const row = el("label", `file-item pending${isSelected ? " selected" : ""}`);
       const radio = document.createElement("input");
-      radio.type = "radio";
+      radio.type = "checkbox";
       radio.name = "jxlSource";
       radio.value = `${source.sourceType}:${source.id}`;
       radio.checked = isSelected;
       radio.addEventListener("change", () => {
-        state.selectedJxlSource = source;
+        state.selectedJxlSource = radio.checked ? source : null;
         renderJxlList();
       });
 
@@ -3625,9 +3642,11 @@
       }
 
       const result = proxyRes.json;
+      if (!result.ok && !Array.isArray(result.sources)) throw new Error(result.error || "Kunne ikke hente feltdata.");
       state.jxlSources = Array.isArray(result.sources) ? result.sources : [];
       state.selectedJxlSource = state.jxlSources[0] || null;
       renderJxlList();
+      await refreshGeminiFxlFiles();
 
       if (state.jxlSources.length) {
         setStatus(`Fant ${state.jxlSources.length} JXL-kilde${state.jxlSources.length === 1 ? "" : "r"}`, "success");
@@ -3642,6 +3661,69 @@
     } finally {
       setBusy(false);
     }
+  }
+
+  async function refreshGeminiFxlFiles() {
+    const hadMultiple = state.geminiFxlFiles.length > 1;
+    state.geminiFxlFiles = [];
+    state.geminiFxlError = "";
+    const previous = ui.geminiFxlSelect.value;
+    ui.geminiFxlSelect.replaceChildren();
+    try {
+      const response = await callProxy("listProjectExplorer", {
+        token: state.accessToken, projectId: state.project.id, projectLocation: state.project.location
+      });
+      if (!response.ok || !response.json?.ok) throw new Error("Kunne ikke søke gjennom prosjektets mapper etter FXL. Oppdater feltdata og prøv igjen.");
+      state.geminiFxlFiles = (response.json.files || []).filter(f => /\.fxl$/i.test(f.name || ""));
+      const files = state.geminiFxlFiles;
+      if (files.length !== 1) {
+        const option = document.createElement("option");
+        option.value = "";
+        option.textContent = files.length ? "Velg kodeliste …" : "Ingen FXL funnet";
+        ui.geminiFxlSelect.appendChild(option);
+      }
+      for (const file of files) {
+        const option = document.createElement("option");
+        option.value = file.id;
+        option.textContent = [file.path, file.name].filter(Boolean).join(" / ");
+        ui.geminiFxlSelect.appendChild(option);
+      }
+      if (hadMultiple && files.some(f => f.id === previous)) ui.geminiFxlSelect.value = previous;
+      ui.geminiFxlStatus.textContent = files.length === 1 ? "Prosjektets kodeliste brukes automatisk."
+        : files.length ? "Flere kodelister funnet. Velg riktig FXL før nedlasting."
+        : "Last opp kodelisten (.fxl) til Connect-prosjektet og oppdater feltdata.";
+    } catch (err) {
+      state.geminiFxlError = err.message;
+      ui.geminiFxlStatus.textContent = err.message;
+    }
+    setBusy(state.busy);
+  }
+
+  async function processGeminiDownload() {
+    const source = state.selectedJxlSource;
+    if (!source || state.busy) return;
+    try {
+      setBusy(true);
+      showHint(null, false);
+      await ensureReady();
+      const fxl = state.geminiFxlFiles.find(f => f.id === ui.geminiFxlSelect.value);
+      if (!fxl) throw new Error(state.geminiFxlError || (state.geminiFxlFiles.length ? "Velg en FXL-kodeliste først." : "Last opp kodelisten (.fxl) til prosjektet og oppdater feltdata."));
+      setStatus(`Klargjør JobXML zigzag: ${source.name}...`, "working");
+      const prepared = await getSelectedJxlSourceText(source);
+      const response = await callProxy("downloadKofFile", {
+        token: state.accessToken, projectId: state.project.id, projectLocation: state.project.location,
+        fileId: fxl.id, fileName: fxl.name
+      });
+      if (!response.ok || !response.json?.ok) throw new Error(response.json?.error || "Kunne ikke laste ned valgt FXL.");
+      const converted = GeminiJxl.convert(prepared.text, response.json.text || "");
+      const outName = String(prepared.jxlName || "jobb.jxl").replace(/\.(jxl|job)$/i, "") + " - Gemini.jxl";
+      triggerDownload(outName, converted.text);
+      setStatus(`Lastet ned ${outName}: ${converted.stats.lines} linjer, ${converted.stats.parts} delstrekninger.`, "success");
+      setDebug({ action: "geminiDownload", source: source.id, fxl: fxl.name, outName, stats: converted.stats });
+    } catch (err) {
+      setStatus(`JobXML zigzag: ${err.message || String(err)}`, "error");
+      setDebug({ action: "geminiDownload", error: err.message || String(err) });
+    } finally { setBusy(false); }
   }
 
   async function processSelectedJxlSource() {
@@ -3876,7 +3958,7 @@
       jobName: source.job?.name || source.name || "JXL",
       jobTrn: source.job?.id || source.id,
       jxlFileId: source.job?.jxlFileId || null,
-      jxlFileName: source.job?.jxlFileName || source.name || null
+      jxlFileName: source.job?.jxlFileName || null
     });
     if (!proxyRes.ok || !proxyRes.json) throw new Error(`Proxy svarte med HTTP ${proxyRes.status}`);
     const result = proxyRes.json;
@@ -4152,6 +4234,7 @@
     ui.stopBtn.addEventListener("click", requestStopConversion);
     ui.convertManualBtn.addEventListener("click", processManualSelectedFiles);
     ui.jxlRefreshBtn.addEventListener("click", refreshJxlSources);
+    ui.geminiRunBtn.addEventListener("click", processGeminiDownload);
     ui.deliveryProducerInput.addEventListener("input", (event) => setStoredDeliveryProducer(event.target.value));
     ui.deliveryRunBtn.addEventListener("click", processLedeSosiDelivery);
     ui.localUploadBtn.addEventListener("click", () => ui.localFileInput.click());
