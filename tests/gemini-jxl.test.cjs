@@ -49,6 +49,7 @@ const testdata = path.join(fixtureRoot, 'Gemini-JXL-normalisering', 'testdata');
     const actions = [], errors = [];
     let files = [{ id: 'fxl-1', name: 'library.fxl', path: 'Kodelister' }];
     let sourceXml = interleaved;
+    let sources = [{ id: 'job', name: 'Testjobb', sourceType: 'field-data', modifiedOn: '2026-11-04T10:00:00Z', job: { id: 'job', name: 'Testjobb' } }];
     await page.addInitScript(() => {
       window.TrimbleConnectWorkspace = { connect: async () => ({
         extension: { requestPermission: async () => 'test-token', setStatusMessage: async () => {} },
@@ -61,7 +62,7 @@ const testdata = path.join(fixtureRoot, 'Gemini-JXL-normalisering', 'testdata');
       if (url.pathname === '/.netlify/functions/tc-proxy') {
         const body = route.request().postDataJSON(); actions.push(body);
         let result;
-        if (body.action === 'listJxlSources') result = { ok: true, sources: [{ id: 'job', name: 'Testjobb', sourceType: 'field-data', job: { id: 'job', name: 'Testjobb' } }] };
+        if (body.action === 'listJxlSources') result = { ok: true, sources };
         else if (body.action === 'listProjectExplorer') result = { ok: true, files };
         else if (body.action === 'getFieldDataJxl') result = { ok: true, text: sourceXml, jxlFile: { fileName: 'testjobb.jxl' } };
         else if (body.action === 'downloadKofFile') result = { ok: true, text: library };
@@ -83,6 +84,22 @@ const testdata = path.join(fixtureRoot, 'Gemini-JXL-normalisering', 'testdata');
     await button.click();
     assert.equal((await downloadPromise).suggestedFilename(), 'testjobb - Gemini.jxl');
     assert.equal(actions.some(a => /upload/i.test(a.action)), false);
+    sources = [...sources, { id: 'old', name: 'Jobb 10', modifiedOn: '2026-10-01T10:00:00Z' }, { id: 'new', name: 'Asfalt 5', modifiedOn: '2026-11-04T12:00:00Z' }, { id: 'missing', name: 'Jobb 2', modifiedOn: null }];
+    await page.getByRole('button', { name: 'Oppdater feltdata', exact: true }).click();
+    await page.waitForFunction(() => !kof2txt.state.busy && kof2txt.state.jxlSources.length === 4);
+    const names = () => page.locator('.file-list .file-item:visible .file-name').allTextContents();
+    assert.deepEqual(await names(), ['Asfalt 5', 'Testjobb', 'Jobb 10', 'Jobb 2']);
+    await page.getByRole('combobox', { name: 'Sorter feltjobber' }).selectOption('date-asc');
+    assert.deepEqual(await names(), ['Jobb 10', 'Testjobb', 'Asfalt 5', 'Jobb 2']);
+    await page.getByRole('combobox', { name: 'Sorter feltjobber' }).selectOption('name-asc');
+    assert.deepEqual(await names(), ['Asfalt 5', 'Jobb 2', 'Jobb 10', 'Testjobb']);
+    await page.getByRole('combobox', { name: 'Sorter feltjobber' }).selectOption('name-desc');
+    assert.deepEqual(await names(), ['Testjobb', 'Jobb 10', 'Jobb 2', 'Asfalt 5']);
+    await page.getByRole('searchbox', { name: 'Søk etter jobbnavn' }).fill('ASFALT');
+    assert.deepEqual(await names(), ['Asfalt 5']);
+    await page.getByRole('searchbox', { name: 'Søk etter jobbnavn' }).fill('');
+    sources = sources.slice(0, 1);
+    console.log('PASS sorting: date both directions, missing dates last, natural names both directions, search');
     files = [...files, { id: 'fxl-2', name: 'other.fxl', path: 'Andre' }];
     await page.getByRole('button', { name: 'Oppdater feltdata', exact: true }).click();
     await page.waitForFunction(() => !kof2txt.state.busy && kof2txt.state.geminiFxlFiles.length === 2);

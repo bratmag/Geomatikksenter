@@ -7,7 +7,7 @@
     TOKEN_WAIT_MS: 30000,
     PROXY_URL: "/.netlify/functions/tc-proxy",
     APP_TITLE: "Geomatikksenter",
-    APP_BUILD: "20261104-gemini-jxl",
+    APP_BUILD: "20261104-field-sort",
     JXL_ECEF_NN2000_GEOID_OFFSET_M: 40.3703,
     AUTO_CONVERT_ON_OPEN: false,
     IFC_POINT_OBJECT_HEIGHT_M: 1,
@@ -28,6 +28,8 @@
     currentProjectFolderId: null,
     activeView: "project",
     jxlSources: [],
+    jxlSort: "date-desc",
+    jxlSearch: "",
     selectedJxlSource: null,
     geminiFxlFiles: [],
     geminiFxlError: "",
@@ -335,6 +337,19 @@
     jxlCard.appendChild(geminiFxlLabel);
     const geminiFxlStatus = el("div", "subtitle", "Oppdater feltdata for å finne prosjektets kodeliste.");
     jxlCard.appendChild(geminiFxlStatus);
+    const jxlTools = el("div", "btn-row");
+    const jxlSearchInput = document.createElement("input");
+    jxlSearchInput.type = "search";
+    jxlSearchInput.placeholder = "Søk etter jobbnavn";
+    jxlSearchInput.setAttribute("aria-label", "Søk etter jobbnavn");
+    const jxlSortSelect = document.createElement("select");
+    jxlSortSelect.setAttribute("aria-label", "Sorter feltjobber");
+    for (const [value, label] of [["date-desc", "Dato – nyeste først"], ["date-asc", "Dato – eldste først"], ["name-asc", "Navn – A til Å"], ["name-desc", "Navn – Å til A"]]) {
+      const option = document.createElement("option");
+      option.value = value; option.textContent = label; jxlSortSelect.appendChild(option);
+    }
+    jxlTools.append(jxlSearchInput, jxlSortSelect);
+    jxlCard.appendChild(jxlTools);
     const jxlList = el("div", "file-list");
     jxlCard.appendChild(jxlList);
 
@@ -442,6 +457,8 @@
       jxlCard,
       jxlCount,
       jxlRefreshBtn,
+      jxlSearchInput,
+      jxlSortSelect,
       geminiRunBtn,
       geminiFxlSelect,
       geminiFxlStatus,
@@ -615,7 +632,16 @@
       return;
     }
 
-    for (const source of state.jxlSources) {
+    const sources = state.jxlSources.filter(source => (source.job?.name || source.name || "").toLocaleLowerCase("nb").includes(state.jxlSearch.toLocaleLowerCase("nb"))).slice().sort((a, b) => {
+      const byName = (a.job?.name || a.name || "").localeCompare(b.job?.name || b.name || "", "nb", { numeric: true, sensitivity: "base" });
+      if (state.jxlSort.startsWith("name")) return state.jxlSort === "name-desc" ? -byName : byName;
+      const left = parseFileTimestamp(a.modifiedOn), right = parseFileTimestamp(b.modifiedOn);
+      if (left == null || right == null) return left == null && right == null ? byName : left == null ? 1 : -1;
+      return (state.jxlSort === "date-asc" ? left - right : right - left) || byName;
+    });
+    ui.jxlCount.textContent = `${sources.length} av ${state.jxlSources.length} jobber`;
+    if (!sources.length) ui.jxlList.appendChild(el("div", "empty-state", "Ingen jobber matcher søket."));
+    for (const source of sources) {
       const isSelected = state.selectedJxlSource?.id === source.id && state.selectedJxlSource?.sourceType === source.sourceType;
       const row = el("label", `file-item pending${isSelected ? " selected" : ""}`);
       const radio = document.createElement("input");
@@ -629,11 +655,12 @@
       });
 
       const info = el("div", "file-info");
-      info.appendChild(el("div", "file-name", source.name || "(uten navn)"));
+      info.appendChild(el("div", "file-name", source.job?.name || source.name || "(uten navn)"));
+      const timestamp = parseFileTimestamp(source.modifiedOn);
       const meta = [
         source.sourceType === "field-data" ? "Field Data" : "Connect Explorer",
         source.path || "",
-        source.modifiedOn || ""
+        timestamp == null ? "Dato ikke tilgjengelig" : `Oppdatert ${new Date(timestamp).toLocaleString("nb-NO", { dateStyle: "short", timeStyle: "short" })}`
       ].filter(Boolean).join(" · ");
       if (meta) info.appendChild(el("div", "file-meta", meta));
       const badge = el("span", "file-status pending", source.sourceType === "field-data" ? "Field Data" : "Fil");
@@ -4234,6 +4261,8 @@
     ui.stopBtn.addEventListener("click", requestStopConversion);
     ui.convertManualBtn.addEventListener("click", processManualSelectedFiles);
     ui.jxlRefreshBtn.addEventListener("click", refreshJxlSources);
+    ui.jxlSortSelect.addEventListener("change", () => { state.jxlSort = ui.jxlSortSelect.value; renderJxlList(); });
+    ui.jxlSearchInput.addEventListener("input", () => { state.jxlSearch = ui.jxlSearchInput.value.trim(); renderJxlList(); });
     ui.geminiRunBtn.addEventListener("click", processGeminiDownload);
     ui.deliveryProducerInput.addEventListener("input", (event) => setStoredDeliveryProducer(event.target.value));
     ui.deliveryRunBtn.addEventListener("click", processLedeSosiDelivery);

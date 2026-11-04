@@ -1228,7 +1228,7 @@ async function listFieldDataJxlJobs({ token, projectId }) {
     .map((job) => ({
       id: job.id || null,
       name: job.name || null,
-      updatedUtc: job.updatedUtc || job.UpdatedUtc || job.updatedOn || job.modifiedOn || null,
+      updatedUtc: fieldDataTimestamp(job),
       jxlFileName: job.rootDataFileJxl?.fileName || null,
       jxlFileId: job.rootDataFileJxl?.id || null,
       size: job.rootDataFileJxl?.size || null,
@@ -1412,7 +1412,7 @@ async function handleListJxlSources(body) {
       id: job.sourceId || job.id,
       name: job.jxlFileName || job.name || job.id,
       path: `Field Data${job.name ? ` / ${job.name}` : ""}${job.sourceLabel ? ` / ${job.sourceLabel}` : ""}`,
-      modifiedOn: job.jxlUpdatedUtc || job.updatedUtc || null,
+      modifiedOn: job.updatedUtc || job.jxlUpdatedUtc || null,
       job
     }))
   ].sort((a, b) => String(b.modifiedOn || "").localeCompare(String(a.modifiedOn || "")));
@@ -1893,7 +1893,7 @@ async function enrichFieldDataJxlJobs({ token, projectId, jobs, diagnostics }) {
     const detailJob = {
       ...job,
       name: detailRes.json.name || job.name,
-      updatedUtc: detailRes.json.updatedUtc || detailRes.json.UpdatedUtc || job.updatedUtc
+      updatedUtc: fieldDataTimestamp(detailRes.json) || job.updatedUtc
     };
     const candidates = getFieldDataRootJxlCandidates(detailRes.json);
     if (!candidates.length) entriesByKey.set(`${job.id}|pending`, { ...detailJob, sourceId: `${job.id}:pending` });
@@ -2067,7 +2067,7 @@ function normalizeFieldDataFile(node, sourceLabel, filePattern) {
     fileName: String(fileName),
     downloadUrl: downloadUrl ? String(downloadUrl) : null,
     size: node.size || node.fileSize || node.length || null,
-    updatedUtc: node.updatedUtc || node.UpdatedUtc || node.updatedOn || node.modifiedOn || node.createdUtc || null,
+    updatedUtc: fieldDataTimestamp(node),
     sourceLabel: sourceLabel || node.type || node.kind || null
   };
 }
@@ -2078,6 +2078,11 @@ function addFieldDataJxlFile(out, seen, file) {
   if (seen.has(key)) return;
   seen.add(key);
   out.push(file);
+}
+
+function fieldDataTimestamp(node) {
+  const candidates = [node?.modifiedDateTime, node?.updatedDateTime, node?.updatedUtc, node?.UpdatedUtc, node?.updatedOn, node?.modifiedOn, node?.createdDateTime, node?.createdUtc];
+  return candidates.find(value => value && !String(value).startsWith("0001-") && Number.isFinite(Date.parse(value))) || null;
 }
 
 function normalizeFieldDataName(value) {
