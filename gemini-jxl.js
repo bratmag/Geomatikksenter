@@ -5,6 +5,7 @@
   const child = (n, name) => children(n, name)[0];
   const value = (n, name) => child(n, name)?.textContent || "";
   const descendants = n => Array.from(n.getElementsByTagName("*"));
+  const normalizeCode = code => code.trim().replace(/\s+/g, " ");
   function parse(text, label) {
     if (/<!DOCTYPE/i.test(text)) throw new Error(`${label}: DOCTYPE støttes ikke.`);
     const doc = new DOMParser().parseFromString(text, "application/xml");
@@ -16,8 +17,8 @@
     const defs = descendants(doc).filter(n => n.parentNode?.localName === "FeatureDefinitions" && n.hasAttribute("Code"));
     const all = new Set(), lines = new Set(), controls = {};
     for (const d of defs) {
-      const code = d.getAttribute("Code").trimEnd();
-      if (!code || /[\s|]/.test(code) || all.has(code)) throw new Error(`FXL: tom, duplisert eller ustøttet fagkode: ${code}`);
+      const code = normalizeCode(d.getAttribute("Code"));
+      if (!code || all.has(code)) throw new Error(`FXL: tom eller duplisert fagkode: ${code}`);
       all.add(code);
       if (d.localName === "LineFeatureDefinition") lines.add(code);
     }
@@ -49,22 +50,32 @@
       names.set(name, (names.get(name) || 0) + 1);
       ids.set(id, (ids.get(id) || 0) + 1);
     }
-    function base(p, token) {
-      if (!token) return "";
-      if (lib.lines.has(token)) return token;
-      if (lib.all.has(token)) return "";
-      const features = children(child(p, "Features"), "Feature").filter(n => n.hasAttribute("Name"));
-      if (!features.length) return "";
-      const name = features[0].getAttribute("Name");
-      if (features.length === 1 && lib.lines.has(name) && token.startsWith(name) && /^[0-9]+$/.test(token.slice(name.length))) return name;
-      fail(p, token, "ukjent eller tvetydig fagkode. Kontroller valgt FXL.");
-    }
     for (const p of active) {
-      const tokens = value(p, "Code").trim().split(/[\t\r\n ]+/), token = tokens[0], b = base(p, token);
+      const code = normalizeCode(value(p, "Code"));
+      if (!code) continue;
+      const tokens = code.split(" ");
+      const features = children(child(p, "Features"), "Feature").filter(n => n.hasAttribute("Name"));
+      const baseCode = features.length === 1 ? normalizeCode(features[0].getAttribute("Name")) : "";
+      let count = tokens.length;
+      let token, b;
+      // Match the longest code first. Only the remaining words are control codes.
+      for (; count > 0; count--) {
+        token = tokens.slice(0, count).join(" ");
+        if (lib.all.has(token)) {
+          b = lib.lines.has(token) ? token : "";
+          break;
+        }
+        if (lib.lines.has(baseCode) && token.startsWith(baseCode) && /^[0-9]+$/.test(token.slice(baseCode.length))) {
+          b = baseCode;
+          break;
+        }
+      }
+      if (!count && features.length) fail(p, code, "ukjent eller tvetydig fagkode. Kontroller valgt FXL.");
       if (!b) continue;
-      for (const t of tokens.slice(1)) if (!Object.values(lib.controls).includes(t)) fail(p, token, `ustøttet kontrollkode eller flere fagkoder: ${t}`);
+      const controls = tokens.slice(count);
+      for (const t of controls) if (!Object.values(lib.controls).includes(t)) fail(p, token, `ustøttet kontrollkode eller flere fagkoder: ${t}`);
       if (!streams.has(token)) streams.set(token, []);
-      streams.get(token).push({ p, base: b, controls: tokens.slice(1) });
+      streams.get(token).push({ p, base: b, controls });
     }
     const signature = n => JSON.stringify([n.nodeName, Array.from(n.attributes || []).map(a => [a.name, a.value]).sort(), Array.from(n.childNodes || []).filter(c => c.nodeType === 1 || (c.nodeType === 3 && c.textContent.trim())).map(c => c.nodeType === 1 ? signature(c) : c.textContent)]);
     const make = (name, content) => { const n = doc.createElement(name); if (content != null) n.textContent = content; return n; };
@@ -75,7 +86,7 @@
       const featureGroup = child(first, "Features"), expected = featureGroup && signature(featureGroup);
       for (const item of run) {
         const p = item.p, features = children(child(p, "Features"), "Feature");
-        if (item.base !== b || features.length !== 1 || features[0].getAttribute("Name") !== b) fail(p, stream, "inkonsistent grunnkode eller attributtgruppe.");
+        if (item.base !== b || features.length !== 1 || normalizeCode(features[0].getAttribute("Name") || "") !== b) fail(p, stream, "inkonsistent grunnkode eller attributtgruppe.");
         if (signature(child(p, "Features")) !== expected) fail(p, stream, "attributtkonflikt mellom punktene i linjen.");
         if (!value(p, "Name") || names.get(value(p, "Name")) !== 1) fail(p, stream, "tomt eller tvetydig punktnavn.");
         if (!p.getAttribute("ID") || ids.get(p.getAttribute("ID")) !== 1) fail(p, stream, "tom eller duplisert punkt-ID.");

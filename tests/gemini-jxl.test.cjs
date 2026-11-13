@@ -35,6 +35,24 @@ const testdata = path.join(fixtureRoot, 'Gemini-JXL-normalisering', 'testdata');
       return Array.from(doc.querySelectorAll('LivePolylineRecord')).map(n => [n.querySelector('StartPoint').textContent, ...Array.from(n.querySelectorAll('EndPoint'), p => p.textContent)].join(','));
     }, { xml: interleaved, fxl: library });
     assert.deepEqual(orders, ['P1,P3', 'P5,P6', 'P7,P8,P7', 'P2,P4']);
+    const spacedCodes = await page.evaluate(({ xml, fxl }) => {
+      const parser = new DOMParser();
+      const job = parser.parseFromString(xml, 'application/xml');
+      const definitions = parser.parseFromString(fxl, 'application/xml');
+      for (const node of job.querySelectorAll('Code, Feature')) {
+        if (node.localName === 'Code') node.textContent = node.textContent.replace(/^AB/, 'Eks kabel');
+        else node.setAttribute('Name', node.getAttribute('Name').replace(/^AB/, 'Eks kabel'));
+      }
+      for (const node of definitions.querySelectorAll('[Code]')) {
+        node.setAttribute('Code', node.getAttribute('Code').replace(/^AB/, 'Eks kabel'));
+      }
+      const serializer = new XMLSerializer();
+      const out = GeminiJxl.convert(serializer.serializeToString(job), serializer.serializeToString(definitions));
+      return Array.from(parser.parseFromString(out.text, 'application/xml').querySelectorAll('LivePolylineRecord'), line =>
+        [line.querySelector('Code').textContent, line.querySelector('StartPoint').textContent,
+          ...Array.from(line.querySelectorAll('EndPoint'), point => point.textContent)]);
+    }, { xml: interleaved, fxl: library });
+    assert.deepEqual(spacedCodes, orders.map(order => ['Eks kabel', ...order.split(',')]));
     for (const name of ['attribute-conflict', 'unsupported-arc', 'single-point']) {
       const error = await page.evaluate(({ xml, fxl }) => { try { GeminiJxl.convert(xml, fxl); return ''; } catch (e) { return e.message; } }, { xml: read(path.join(testdata, `${name}.jxl`)), fxl: library });
       assert.match(error, /Punkt .*streng/);
