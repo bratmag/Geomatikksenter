@@ -33,7 +33,11 @@
     return { all, lines, controls };
   }
   function convert(text, fxlText) {
-    const lib = library(fxlText), doc = parse(text, "JobXML");
+    const doc = parse(text, "JobXML");
+    const multiple = typeof fxlText !== "string";
+    const libraries = multiple ? new Map(Object.entries(fxlText).map(([name, xml]) => [name.toLocaleLowerCase("nb"), library(xml)])) : null;
+    const fallback = multiple ? null : library(fxlText);
+    const history = codingHistory(doc);
     const field = child(doc.documentElement, "FieldBook");
     if (doc.documentElement.localName !== "JOBFile" || !field || doc.documentElement.namespaceURI) throw new Error("Forventet JobXML med JOBFile/FieldBook uten XML-navnerom.");
     function hasMarker(n) {
@@ -53,6 +57,9 @@
     for (const p of active) {
       const code = normalizeCode(value(p, "Code"));
       if (!code) continue;
+      const sourceLibrary = history.points.get(p) || history.fallback;
+      const lib = multiple ? libraries.get(sourceLibrary.toLocaleLowerCase("nb")) : fallback;
+      if (!lib) fail(p, code, `mangler kodeliste «${sourceLibrary}».`);
       const tokens = code.split(" ");
       const features = children(child(p, "Features"), "Feature").filter(n => n.hasAttribute("Name"));
       const featureName = features.length === 1 ? normalizeCode(features[0].getAttribute("Name")) : "";
@@ -67,6 +74,11 @@
           b = lib.lines.has(token) ? token : "";
           break;
         }
+        const equivalent = token.replace(/_/g, " ");
+        if (baseCode && aliases.length === 1 && (equivalent === baseCode.replace(/_/g, " ") || (equivalent.startsWith(baseCode.replace(/_/g, " ")) && /^[0-9]+$/.test(equivalent.slice(baseCode.length))))) {
+          b = lib.lines.has(baseCode) ? baseCode : "";
+          break;
+        }
         if (lib.lines.has(baseCode) && token.startsWith(baseCode) && /^[0-9]+$/.test(token.slice(baseCode.length))) {
           b = baseCode;
           break;
@@ -74,10 +86,13 @@
       }
       if (!count && features.length) fail(p, code, "ukjent eller tvetydig fagkode. Kontroller valgt FXL.");
       if (!b) continue;
-      const controls = tokens.slice(count);
-      for (const t of controls) if (!Object.values(lib.controls).includes(t)) fail(p, token, `ustøttet kontrollkode eller flere fagkoder: ${t}`);
+      const controls = tokens.slice(count).map(t => {
+        const type = Object.keys(lib.controls).find(type => lib.controls[type] === t);
+        if (!type) fail(p, token, `ustøttet kontrollkode eller flere fagkoder: ${t}`);
+        return type;
+      });
       if (!streams.has(token)) streams.set(token, []);
-      streams.get(token).push({ p, base: b, controls });
+      streams.get(token).push({ p, base: b, controls, sourceLibrary });
     }
     const signature = n => JSON.stringify([n.nodeName, Array.from(n.attributes || []).map(a => [a.name, a.value]).sort(), Array.from(n.childNodes || []).filter(c => c.nodeType === 1 || (c.nodeType === 3 && c.textContent.trim())).map(c => c.nodeType === 1 ? signature(c) : c.textContent)]);
     const make = (name, content) => { const n = doc.createElement(name); if (content != null) n.textContent = content; return n; };
@@ -99,7 +114,7 @@
       line.setAttribute("ID", id); line.setAttribute("TimeStamp", run[run.length - 1].p.getAttribute("TimeStamp") || "");
       for (const [key, val] of [["Name", name], ["Code", b], ["Deleted", "false"], ["StartPoint", name]]) line.appendChild(make(key, val));
       const parts = make("Parts"), ends = run.slice(1).map(i => value(i.p, "Name"));
-      if (run[run.length - 1].controls.includes(lib.controls.Close) && ends[ends.length - 1] !== name) ends.push(name);
+      if (run[run.length - 1].controls.includes("Close") && ends[ends.length - 1] !== name) ends.push(name);
       for (const end of ends) { const part = make("LinePart"); part.appendChild(make("EndPoint", end)); parts.appendChild(part); }
       const commonFeatures = featureGroup.cloneNode(true);
       const commonFeature = child(commonFeatures, "Feature");
@@ -120,9 +135,9 @@
     for (const [stream, items] of streams) {
       let run = [];
       for (const item of items) {
-        if (run.length && item.controls.includes(lib.controls.Start)) { emit(run, stream); run = []; }
+        if (run.length && (item.controls.includes("Start") || item.base !== run[0].base)) { emit(run, stream); run = []; }
         run.push(item);
-        if (item.controls.includes(lib.controls.End) || item.controls.includes(lib.controls.Close)) { emit(run, stream); run = []; }
+        if (item.controls.includes("End") || item.controls.includes("Close")) { emit(run, stream); run = []; }
       }
       if (run.length) emit(run, stream);
     }
@@ -137,24 +152,33 @@
     }
     return { text: new XMLSerializer().serializeToString(doc), stats: { lines: lineCount, points: converted.size, parts: partsCount } };
   }
-  function referencedFxl(xml) {
-    const doc = parse(xml, "JobXML");
+  function codingHistory(doc) {
     const associated = child(child(child(doc.documentElement, "Environment"), "AssociatedFiles"), "FeatureCodeLibrary");
     const fileName = path => String(path || "").trim().split(/[\\/]/).pop();
     const current = fileName(associated?.textContent);
     const extension = name => name && !/\.fxl$/i.test(name) ? `${name}.fxl` : name;
     let activeLibrary = "";
     const measuredLibraries = new Map();
+    const points = new Map();
     for (const record of children(child(doc.documentElement, "FieldBook"))) {
       if (record.localName === "FeatureCodingRecord") {
         activeLibrary = extension(fileName(value(record, "SourceFilename") || value(record, "LibraryName")));
       } else if (record.localName === "PointRecord" && value(record, "Deleted") !== "true" && value(record, "Code").trim() && activeLibrary) {
         measuredLibraries.set(activeLibrary.toLocaleLowerCase("nb"), activeLibrary);
+        points.set(record, activeLibrary);
       }
     }
-    if (measuredLibraries.size > 1) throw new Error(`Punktene er målt med flere kodelister: ${Array.from(measuredLibraries.values()).join(", ")}. Velg kodeliste manuelt.`);
-    if (measuredLibraries.size === 1) return measuredLibraries.values().next().value;
-    return extension(current || activeLibrary);
+    const fallback = extension(current || activeLibrary);
+    return { points, names: Array.from(measuredLibraries.values()), fallback };
   }
-  globalThis.GeminiJxl = { convert, library, referencedFxl };
+  function referencedFxls(xml) {
+    const history = codingHistory(parse(xml, "JobXML"));
+    return history.names.length ? history.names : history.fallback ? [history.fallback] : [];
+  }
+  function referencedFxl(xml) {
+    const names = referencedFxls(xml);
+    if (names.length > 1) throw new Error(`Punktene er målt med flere kodelister: ${names.join(", ")}. Velg kodeliste manuelt.`);
+    return names[0] || "";
+  }
+  globalThis.GeminiJxl = { convert, library, referencedFxl, referencedFxls };
 })();

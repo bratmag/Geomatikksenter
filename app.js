@@ -7,7 +7,7 @@
     TOKEN_WAIT_MS: 30000,
     PROXY_URL: "/.netlify/functions/tc-proxy",
     APP_TITLE: "Geomatikksenter",
-    APP_BUILD: "20261116-auto-fxl",
+    APP_BUILD: "20261116-multiple-fxl",
     JXL_ECEF_NN2000_GEOID_OFFSET_M: 40.3703,
     AUTO_CONVERT_ON_OPEN: false,
     IFC_POINT_OBJECT_HEIGHT_M: 1,
@@ -3713,7 +3713,7 @@
         option.textContent = [file.path, file.name].filter(Boolean).join(" / ");
         ui.geminiFxlSelect.appendChild(option);
       }
-      ui.geminiFxlStatus.textContent = files.length ? "Kodelisten med samme navn som i jobbens JXL velges ved eksport. Du kan også velge kodeliste manuelt."
+      ui.geminiFxlStatus.textContent = files.length ? "Kodelistene fra jobbens målehistorikk velges automatisk ved eksport. Du kan også velge én kodeliste manuelt."
         : "Last opp kodelisten (.fxl) til Connect-prosjektet og oppdater feltdata.";
     } catch (err) {
       state.geminiFxlError = err.message;
@@ -3731,28 +3731,35 @@
       await ensureReady();
       setStatus(`Klargjør JobXML zigzag: ${source.name}...`, "working");
       const prepared = await getSelectedJxlSourceText(source);
-      let fxl = state.geminiFxlFiles.find(f => f.id === ui.geminiFxlSelect.value);
-      if (!fxl) {
-        const reference = GeminiJxl.referencedFxl(prepared.text);
+      const manualFxl = state.geminiFxlFiles.find(f => f.id === ui.geminiFxlSelect.value);
+      const references = manualFxl ? [manualFxl.name] : GeminiJxl.referencedFxls(prepared.text);
+      if (!references.length) references.push("");
+      const selectedFxls = references.map(reference => {
+        if (manualFxl) return { reference, file: manualFxl };
         const matches = state.geminiFxlFiles.filter(f => String(f.name || "").trim().toLocaleLowerCase("nb") === reference.toLocaleLowerCase("nb"));
-        if (matches.length === 1) fxl = matches[0];
+        if (matches.length === 1) return { reference, file: matches[0] };
         else if (matches.length > 1) throw new Error(`Flere filer heter «${reference}» i prosjektet. Velg riktig mappe og kodeliste manuelt.`);
         else if (reference) throw new Error(`Jobben bruker «${reference}». Last opp denne FXL-filen til prosjektet og oppdater feltdata, eller velg kodeliste manuelt.`);
-        else if (state.geminiFxlFiles.length === 1) fxl = state.geminiFxlFiles[0];
+        else if (state.geminiFxlFiles.length === 1) return { reference: state.geminiFxlFiles[0].name, file: state.geminiFxlFiles[0] };
         else throw new Error(state.geminiFxlError || "JXL mangler henvisning til kodeliste. Velg en FXL-kodeliste manuelt.");
-      }
-      ui.geminiFxlStatus.textContent = `Bruker ${[fxl.path, fxl.name].filter(Boolean).join(" / ")}`;
-      const response = await callProxy("downloadKofFile", {
-        token: state.accessToken, projectId: state.project.id, projectLocation: state.project.location,
-        fileId: fxl.id, fileName: fxl.name
       });
-      if (!response.ok || !response.json?.ok) throw new Error(response.json?.error || "Kunne ikke laste ned valgt FXL.");
+      ui.geminiFxlStatus.textContent = `Bruker ${selectedFxls.map(({ file }) => [file.path, file.name].filter(Boolean).join(" / ")).join(" og ")}`;
+      const libraryTexts = {};
+      for (const { reference, file: fxl } of selectedFxls) {
+        const response = await callProxy("downloadKofFile", {
+          token: state.accessToken, projectId: state.project.id, projectLocation: state.project.location,
+          fileId: fxl.id, fileName: fxl.name
+        });
+        if (!response.ok || !response.json?.ok) throw new Error(response.json?.error || `Kunne ikke laste ned ${fxl.name}.`);
+        libraryTexts[reference] = response.json.text || "";
+      }
       const coordinates = await JobXmlCoordinates.prepare(prepared.text);
-      const converted = GeminiJxl.convert(coordinates.text, response.json.text || "");
+      const useSingle = manualFxl || !GeminiJxl.referencedFxls(prepared.text).length;
+      const converted = GeminiJxl.convert(coordinates.text, useSingle ? Object.values(libraryTexts)[0] : libraryTexts);
       const outName = String(prepared.jxlName || "jobb.jxl").replace(/\.(jxl|job)$/i, "") + " - Gemini.jxl";
       triggerDownload(outName, converted.text);
       setStatus(`Lastet ned ${outName}: ${converted.stats.lines} linjer, ${converted.stats.parts} delstrekninger.`, "success");
-      setDebug({ action: "geminiDownload", source: source.id, fxl: fxl.name, outName, stats: converted.stats, coordinates: { repaired: coordinates.repaired, model: coordinates.model || null, points: coordinates.points } });
+      setDebug({ action: "geminiDownload", source: source.id, fxl: selectedFxls.map(({ file }) => file.name), outName, stats: converted.stats, coordinates: { repaired: coordinates.repaired, model: coordinates.model || null, points: coordinates.points } });
     } catch (err) {
       setStatus(`JobXML zigzag: ${err.message || String(err)}`, "error");
       setDebug({ action: "geminiDownload", error: err.message || String(err) });

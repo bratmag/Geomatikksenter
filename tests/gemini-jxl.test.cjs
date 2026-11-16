@@ -39,6 +39,22 @@ const testdata = path.join(fixtureRoot, 'Gemini-JXL-normalisering', 'testdata');
     }
     const library = read(path.join(testdata, 'test-library.fxl'));
     const interleaved = read(path.join(testdata, 'interleaved.jxl'));
+    const multipleLibraries = await page.evaluate(() => {
+      const feature = code => `<Features><Feature Name="${code}"><Attribute><Name>Note</Name><Value>shared</Value></Attribute></Feature></Features>`;
+      const point = (id, code) => `<PointRecord ID="${id}"><Name>P${id}</Name><Code>${code}</Code>${feature('L')}</PointRecord>`;
+      const record = name => `<FeatureCodingRecord><SourceFilename>${name}</SourceFilename></FeatureCodingRecord>`;
+      const fxl = (end, extra) => `<Library><FeatureDefinitions><LineFeatureDefinition Code="L"/>${extra}</FeatureDefinitions><ControlCodeDefinition Type="End" Code="${end}"/></Library>`;
+      const xml = `<JOBFile><FieldBook>${record('old.fxl')}${point(1, 'L')}${point(2, 'L E')}${record('new.fxl')}${point(3, 'L')}${point(4, 'L STOP')}${point(5, 'L1')}</FieldBook></JOBFile>`;
+      const libraries = { 'old.fxl': fxl('E', ''), 'new.fxl': fxl('STOP', '<PointFeatureDefinition Code="L1"/>') };
+      const result = GeminiJxl.convert(xml, libraries);
+      const doc = new DOMParser().parseFromString(result.text, 'application/xml');
+      let missing = '';
+      try { GeminiJxl.convert(xml, { 'old.fxl': libraries['old.fxl'] }); } catch (e) { missing = e.message; }
+      return { stats: result.stats, point: doc.querySelector('PointRecord[ID="5"] Code').textContent, missing };
+    });
+    assert.deepEqual(multipleLibraries.stats, { lines: 2, points: 4, parts: 2 });
+    assert.equal(multipleLibraries.point, 'L1');
+    assert.match(multipleLibraries.missing, /new.fxl/);
     const conflict = await page.evaluate(({ xml, fxl }) => {
       const out = GeminiJxl.convert(xml, fxl);
       const parse = s => new DOMParser().parseFromString(s, 'application/xml');
@@ -165,6 +181,14 @@ const testdata = path.join(fixtureRoot, 'Gemini-JXL-normalisering', 'testdata');
     await button.click();
     await automaticDownload;
     assert.equal(actions.filter(a => a.action === 'downloadKofFile').at(-1).fileId, 'fxl-2');
+    sourceXml = interleaved
+      .replace('<FieldBook>', '<FieldBook><FeatureCodingRecord><SourceFilename>library.fxl</SourceFilename></FeatureCodingRecord>')
+      .replace('<PointRecord ID="5"', '<FeatureCodingRecord><SourceFilename>other.fxl</SourceFilename></FeatureCodingRecord><PointRecord ID="5"');
+    const multiStart = actions.length;
+    const multiDownload = page.waitForEvent('download');
+    await button.click();
+    await multiDownload;
+    assert.deepEqual(actions.slice(multiStart).filter(a => a.action === 'downloadKofFile').map(a => a.fileId), ['fxl-1', 'fxl-2']);
     sourceXml = interleaved.replace('</JOBFile>', '<Environment><AssociatedFiles><FeatureCodeLibrary>missing.fxl</FeatureCodeLibrary></AssociatedFiles></Environment></JOBFile>');
     await button.click();
     await page.waitForFunction(() => !kof2txt.state.busy);
