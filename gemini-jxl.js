@@ -55,7 +55,9 @@
       if (!code) continue;
       const tokens = code.split(" ");
       const features = children(child(p, "Features"), "Feature").filter(n => n.hasAttribute("Name"));
-      const baseCode = features.length === 1 ? normalizeCode(features[0].getAttribute("Name")) : "";
+      const featureName = features.length === 1 ? normalizeCode(features[0].getAttribute("Name")) : "";
+      const aliases = Array.from(lib.all).filter(code => code.replace(/_/g, " ") === featureName.replace(/_/g, " "));
+      const baseCode = lib.all.has(featureName) ? featureName : aliases.length === 1 ? aliases[0] : "";
       let count = tokens.length;
       let token, b;
       // Match the longest code first. Only the remaining words are control codes.
@@ -86,7 +88,7 @@
       const featureGroup = child(first, "Features");
       for (const item of run) {
         const p = item.p, features = children(child(p, "Features"), "Feature");
-        if (item.base !== b || features.length !== 1 || normalizeCode(features[0].getAttribute("Name") || "") !== b) fail(p, stream, "inkonsistent grunnkode eller attributtgruppe.");
+        if (item.base !== b || features.length !== 1) fail(p, stream, "inkonsistent grunnkode eller attributtgruppe.");
         if (!value(p, "Name") || names.get(value(p, "Name")) !== 1) fail(p, stream, "tomt eller tvetydig punktnavn.");
         if (!p.getAttribute("ID") || ids.get(p.getAttribute("ID")) !== 1) fail(p, stream, "tom eller duplisert punkt-ID.");
       }
@@ -101,6 +103,9 @@
       for (const end of ends) { const part = make("LinePart"); part.appendChild(make("EndPoint", end)); parts.appendChild(part); }
       const commonFeatures = featureGroup.cloneNode(true);
       const commonFeature = child(commonFeatures, "Feature");
+      // The exact FXL code classifies the line. Stored point attributes can still
+      // name an earlier feature definition after a code has been renamed.
+      commonFeature.setAttribute("Name", b);
       for (const attribute of children(commonFeature, "Attribute")) {
         const name = value(attribute, "Name");
         const shared = run.every(({ p }) => {

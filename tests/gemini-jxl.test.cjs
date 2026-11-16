@@ -75,6 +75,20 @@ const testdata = path.join(fixtureRoot, 'Gemini-JXL-normalisering', 'testdata');
           ...Array.from(line.querySelectorAll('EndPoint'), point => point.textContent)]);
     }, { xml: interleaved, fxl: library });
     assert.deepEqual(spacedCodes, orders.map(order => ['Eks kabel', ...order.split(',')]));
+    const renamedCodes = await page.evaluate(({ xml, fxl }) => {
+      const parser = new DOMParser(), job = parser.parseFromString(xml, 'application/xml');
+      const definitions = parser.parseFromString(fxl, 'application/xml');
+      for (const node of job.querySelectorAll('Code')) node.textContent = node.textContent.replace(/^AB/, 'Eks_kabel');
+      for (const node of job.querySelectorAll('Feature')) node.setAttribute('Name', node.getAttribute('Name').replace(/^AB/, 'Eks kabel'));
+      for (const node of definitions.querySelectorAll('[Code]')) node.setAttribute('Code', node.getAttribute('Code').replace(/^AB/, 'Eks_kabel'));
+      const serializer = new XMLSerializer();
+      const out = GeminiJxl.convert(serializer.serializeToString(job), serializer.serializeToString(definitions));
+      const doc = parser.parseFromString(out.text, 'application/xml');
+      return { lines: Array.from(doc.querySelectorAll('LivePolylineRecord > Features > Feature'), f => f.getAttribute('Name')), point: doc.querySelector('PointRecord > Features > Feature').getAttribute('Name'), realPointCode: doc.querySelector('PointRecord[ID="9"] > Code').textContent };
+    }, { xml: interleaved, fxl: library });
+    assert.deepEqual(renamedCodes.lines, ['Eks_kabel', 'Eks_kabel', 'Eks_kabel', 'Eks_kabel']);
+    assert.equal(renamedCodes.point, 'Eks kabel');
+    assert.equal(renamedCodes.realPointCode, 'Eks_kabel12');
     for (const name of ['unsupported-arc']) {
       const error = await page.evaluate(({ xml, fxl }) => { try { GeminiJxl.convert(xml, fxl); return ''; } catch (e) { return e.message; } }, { xml: read(path.join(testdata, `${name}.jxl`)), fxl: library });
       assert.match(error, /Punkt .*streng/);
