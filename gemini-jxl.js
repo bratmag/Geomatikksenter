@@ -82,12 +82,11 @@
     let lineCount = 0, partsCount = 0;
     function emit(run, stream) {
       const first = run[0].p, b = run[0].base;
-      if (run.length < 2) fail(first, stream, "linjen har bare ett punkt.");
-      const featureGroup = child(first, "Features"), expected = featureGroup && signature(featureGroup);
+      if (run.length < 2) return;
+      const featureGroup = child(first, "Features");
       for (const item of run) {
         const p = item.p, features = children(child(p, "Features"), "Feature");
         if (item.base !== b || features.length !== 1 || normalizeCode(features[0].getAttribute("Name") || "") !== b) fail(p, stream, "inkonsistent grunnkode eller attributtgruppe.");
-        if (signature(child(p, "Features")) !== expected) fail(p, stream, "attributtkonflikt mellom punktene i linjen.");
         if (!value(p, "Name") || names.get(value(p, "Name")) !== 1) fail(p, stream, "tomt eller tvetydig punktnavn.");
         if (!p.getAttribute("ID") || ids.get(p.getAttribute("ID")) !== 1) fail(p, stream, "tom eller duplisert punkt-ID.");
       }
@@ -100,7 +99,17 @@
       const parts = make("Parts"), ends = run.slice(1).map(i => value(i.p, "Name"));
       if (run[run.length - 1].controls.includes(lib.controls.Close) && ends[ends.length - 1] !== name) ends.push(name);
       for (const end of ends) { const part = make("LinePart"); part.appendChild(make("EndPoint", end)); parts.appendChild(part); }
-      line.appendChild(parts); line.appendChild(featureGroup.cloneNode(true)); field.appendChild(line);
+      const commonFeatures = featureGroup.cloneNode(true);
+      const commonFeature = child(commonFeatures, "Feature");
+      for (const attribute of children(commonFeature, "Attribute")) {
+        const name = value(attribute, "Name");
+        const shared = run.every(({ p }) => {
+          const matches = children(child(child(p, "Features"), "Feature"), "Attribute").filter(a => value(a, "Name") === name);
+          return matches.length === 1 && signature(matches[0]) === signature(attribute);
+        });
+        if (!shared) commonFeature.removeChild(attribute);
+      }
+      line.appendChild(parts); line.appendChild(commonFeatures); field.appendChild(line);
       run.forEach(i => converted.add(i.p)); lineCount++; partsCount += ends.length;
     }
     for (const [stream, items] of streams) {
@@ -120,7 +129,6 @@
         p.insertBefore(doc.createComment(` JobXML zigzag original Code: ${code.textContent} `), code);
         code.textContent = "";
       }
-      children(p, "Features").forEach(n => p.removeChild(n));
     }
     return { text: new XMLSerializer().serializeToString(doc), stats: { lines: lineCount, points: converted.size, parts: partsCount } };
   }

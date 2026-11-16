@@ -20,15 +20,37 @@ const testdata = path.join(fixtureRoot, 'Gemini-JXL-normalisering', 'testdata');
         const parser = new DOMParser();
         const signature = n => [n.nodeType, n.nodeName, n.nodeType === 1 ? Array.from(n.attributes).map(a => [a.name, a.value]).sort() : n.nodeValue, Array.from(n.childNodes).map(signature)];
         const sig = xml => JSON.stringify(signature(parser.parseFromString(xml, 'application/xml').documentElement));
-        return { equal: sig(actual.text) === sig(expected), stats: actual.stats };
+        const actualDoc = parser.parseFromString(actual.text, 'application/xml');
+        const sourceDoc = parser.parseFromString(source, 'application/xml');
+        const points = doc => Array.from(doc.querySelectorAll('FieldBook > PointRecord, Reductions > Point'));
+        const preserved = points(sourceDoc).every((p, i) => {
+          const before = p.querySelector('Features');
+          const after = points(actualDoc)[i].querySelector('Features');
+          return (before?.outerHTML || '') === (after?.outerHTML || '');
+        });
+        for (const p of points(actualDoc)) if (p.querySelector('Code')?.textContent === '') p.querySelector('Features')?.remove();
+        return { equal: sig(new XMLSerializer().serializeToString(actualDoc)) === sig(expected), preserved, stats: actual.stats };
       }, { source: read(file), fxl, expected: read(path.join('.local-gemini-test', `${name}-expected.jxl`)) });
       assert.equal(result.equal, true, `${name}: complete XML must match verified XSLT`);
+      assert.equal(result.preserved, true);
       assert.equal(result.stats.lines, 27);
       if (name === 'original') assert.deepEqual(result.stats, { lines: 27, points: 142, parts: 115 });
       console.log(`PASS ${name}: complete XML matches verified XSLT`, result.stats);
     }
     const library = read(path.join(testdata, 'test-library.fxl'));
     const interleaved = read(path.join(testdata, 'interleaved.jxl'));
+    const conflict = await page.evaluate(({ xml, fxl }) => {
+      const out = GeminiJxl.convert(xml, fxl);
+      const parse = s => new DOMParser().parseFromString(s, 'application/xml');
+      const source = parse(xml), doc = parse(out.text);
+      const pointFeatures = d => Array.from(d.querySelectorAll('PointRecord > Features'), f => f.outerHTML);
+      return { before: pointFeatures(source), after: pointFeatures(doc), lineAttributes: doc.querySelectorAll('LivePolylineRecord Attribute').length, lines: out.stats.lines };
+    }, { xml: read(path.join(testdata, 'attribute-conflict.jxl')), fxl: library });
+    assert.deepEqual(conflict.after, conflict.before);
+    assert.equal(conflict.lines, 1);
+    assert.equal(conflict.lineAttributes, 0);
+    const singleton = await page.evaluate(({ xml, fxl }) => GeminiJxl.convert(xml, fxl), { xml: read(path.join(testdata, 'single-point.jxl')), fxl: library });
+    assert.equal(singleton.stats.lines, 0);
     const orders = await page.evaluate(({ xml, fxl }) => {
       const out = GeminiJxl.convert(xml, fxl);
       const doc = new DOMParser().parseFromString(out.text, 'application/xml');
@@ -53,7 +75,7 @@ const testdata = path.join(fixtureRoot, 'Gemini-JXL-normalisering', 'testdata');
           ...Array.from(line.querySelectorAll('EndPoint'), point => point.textContent)]);
     }, { xml: interleaved, fxl: library });
     assert.deepEqual(spacedCodes, orders.map(order => ['Eks kabel', ...order.split(',')]));
-    for (const name of ['attribute-conflict', 'unsupported-arc', 'single-point']) {
+    for (const name of ['unsupported-arc']) {
       const error = await page.evaluate(({ xml, fxl }) => { try { GeminiJxl.convert(xml, fxl); return ''; } catch (e) { return e.message; } }, { xml: read(path.join(testdata, `${name}.jxl`)), fxl: library });
       assert.match(error, /Punkt .*streng/);
       console.log(`PASS ${name}: ${error}`);
@@ -136,10 +158,10 @@ const testdata = path.join(fixtureRoot, 'Gemini-JXL-normalisering', 'testdata');
     const reference = await page.evaluate(() => GeminiJxl.referencedFxl('<JOBFile><FieldBook><FeatureCodingRecord><SourceFilename>old.fxl</SourceFilename></FeatureCodingRecord><FeatureCodingRecord><SourceFilename>Latest.fxl</SourceFilename></FeatureCodingRecord></FieldBook></JOBFile>'));
     assert.equal(reference, 'Latest.fxl');
     await page.getByLabel('Kodeliste for JobXML zigzag').selectOption('fxl-2');
-    sourceXml = read(path.join(testdata, 'attribute-conflict.jxl'));
+    sourceXml = read(path.join(testdata, 'unsupported-arc.jxl'));
     await button.click();
     await page.waitForFunction(() => !kof2txt.state.busy);
-    assert.match(await page.locator('.status').textContent(), /attributtkonflikt/);
+    assert.match(await page.locator('.status').textContent(), /ustøttet kontrollkode/);
     files = [];
     await page.getByRole('button', { name: 'Oppdater feltdata', exact: true }).click();
     await page.waitForFunction(() => !kof2txt.state.busy && !kof2txt.state.geminiFxlFiles.length);
