@@ -142,12 +142,19 @@
     const associated = child(child(child(doc.documentElement, "Environment"), "AssociatedFiles"), "FeatureCodeLibrary");
     const fileName = path => String(path || "").trim().split(/[\\/]/).pop();
     const current = fileName(associated?.textContent);
-    if (current) return /\.fxl$/i.test(current) ? current : `${current}.fxl`;
-    const records = children(child(doc.documentElement, "FieldBook"), "FeatureCodingRecord");
-    if (!records.length) return "";
-    const latest = records[records.length - 1];
-    const name = fileName(value(latest, "SourceFilename") || value(latest, "LibraryName"));
-    return name && !/\.fxl$/i.test(name) ? `${name}.fxl` : name;
+    const extension = name => name && !/\.fxl$/i.test(name) ? `${name}.fxl` : name;
+    let activeLibrary = "";
+    const measuredLibraries = new Map();
+    for (const record of children(child(doc.documentElement, "FieldBook"))) {
+      if (record.localName === "FeatureCodingRecord") {
+        activeLibrary = extension(fileName(value(record, "SourceFilename") || value(record, "LibraryName")));
+      } else if (record.localName === "PointRecord" && value(record, "Deleted") !== "true" && value(record, "Code").trim() && activeLibrary) {
+        measuredLibraries.set(activeLibrary.toLocaleLowerCase("nb"), activeLibrary);
+      }
+    }
+    if (measuredLibraries.size > 1) throw new Error(`Punktene er målt med flere kodelister: ${Array.from(measuredLibraries.values()).join(", ")}. Velg kodeliste manuelt.`);
+    if (measuredLibraries.size === 1) return measuredLibraries.values().next().value;
+    return extension(current || activeLibrary);
   }
   globalThis.GeminiJxl = { convert, library, referencedFxl };
 })();

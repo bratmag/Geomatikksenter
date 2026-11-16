@@ -171,6 +171,15 @@ const testdata = path.join(fixtureRoot, 'Gemini-JXL-normalisering', 'testdata');
     assert.match(await page.locator('.status').textContent(), /Jobben bruker «missing.fxl»/);
     const reference = await page.evaluate(() => GeminiJxl.referencedFxl('<JOBFile><FieldBook><FeatureCodingRecord><SourceFilename>old.fxl</SourceFilename></FeatureCodingRecord><FeatureCodingRecord><SourceFilename>Latest.fxl</SourceFilename></FeatureCodingRecord></FieldBook></JOBFile>'));
     assert.equal(reference, 'Latest.fxl');
+    const measuredReference = await page.evaluate(() => {
+      const xml = '<JOBFile><FieldBook><FeatureCodingRecord><SourceFilename>Johannes kodeliste 20260918.fxl</SourceFilename></FeatureCodingRecord><PointRecord><Name>379</Name><Code>Eks kabel</Code><Deleted>false</Deleted></PointRecord><FeatureCodingRecord><SourceFilename>Johannes kodeliste 20261112.fxl</SourceFilename></FeatureCodingRecord></FieldBook><Environment><AssociatedFiles><FeatureCodeLibrary>Johannes kodeliste 20261112.fxl</FeatureCodeLibrary></AssociatedFiles></Environment></JOBFile>';
+      const selected = GeminiJxl.referencedFxl(xml);
+      let error = '';
+      try { GeminiJxl.referencedFxl(xml.replace('</FieldBook>', '<PointRecord><Name>400</Name><Code>OV</Code></PointRecord></FieldBook>')); } catch (e) { error = e.message; }
+      return { selected, error };
+    });
+    assert.equal(measuredReference.selected, 'Johannes kodeliste 20260918.fxl');
+    assert.match(measuredReference.error, /flere kodelister/);
     await page.getByLabel('Kodeliste for JobXML zigzag').selectOption('fxl-2');
     sourceXml = read(path.join(testdata, 'unsupported-arc.jxl'));
     await button.click();
