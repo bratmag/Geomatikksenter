@@ -124,5 +124,17 @@
     }
     return { text: new XMLSerializer().serializeToString(doc), stats: { lines: lineCount, points: converted.size, parts: partsCount } };
   }
-  globalThis.GeminiJxl = { convert, library };
+  function referencedFxl(xml) {
+    const doc = parse(xml, "JobXML");
+    const associated = child(child(child(doc.documentElement, "Environment"), "AssociatedFiles"), "FeatureCodeLibrary");
+    const fileName = path => String(path || "").trim().split(/[\\/]/).pop();
+    const current = fileName(associated?.textContent);
+    if (current) return /\.fxl$/i.test(current) ? current : `${current}.fxl`;
+    const records = children(child(doc.documentElement, "FieldBook"), "FeatureCodingRecord");
+    if (!records.length) return "";
+    const latest = records[records.length - 1];
+    const name = fileName(value(latest, "SourceFilename") || value(latest, "LibraryName"));
+    return name && !/\.fxl$/i.test(name) ? `${name}.fxl` : name;
+  }
+  globalThis.GeminiJxl = { convert, library, referencedFxl };
 })();

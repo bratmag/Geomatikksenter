@@ -7,7 +7,7 @@
     TOKEN_WAIT_MS: 30000,
     PROXY_URL: "/.netlify/functions/tc-proxy",
     APP_TITLE: "Geomatikksenter",
-    APP_BUILD: "20261104-built-in-geoids",
+    APP_BUILD: "20261116-auto-fxl",
     JXL_ECEF_NN2000_GEOID_OFFSET_M: 40.3703,
     AUTO_CONVERT_ON_OPEN: false,
     IFC_POINT_OBJECT_HEIGHT_M: 1,
@@ -3691,10 +3691,8 @@
   }
 
   async function refreshGeminiFxlFiles() {
-    const hadMultiple = state.geminiFxlFiles.length > 1;
     state.geminiFxlFiles = [];
     state.geminiFxlError = "";
-    const previous = ui.geminiFxlSelect.value;
     ui.geminiFxlSelect.replaceChildren();
     try {
       const response = await callProxy("listProjectExplorer", {
@@ -3703,10 +3701,10 @@
       if (!response.ok || !response.json?.ok) throw new Error("Kunne ikke søke gjennom prosjektets mapper etter FXL. Oppdater feltdata og prøv igjen.");
       state.geminiFxlFiles = (response.json.files || []).filter(f => /\.fxl$/i.test(f.name || ""));
       const files = state.geminiFxlFiles;
-      if (files.length !== 1) {
+      {
         const option = document.createElement("option");
         option.value = "";
-        option.textContent = files.length ? "Velg kodeliste …" : "Ingen FXL funnet";
+        option.textContent = files.length ? "Automatisk fra valgt jobb" : "Ingen FXL funnet";
         ui.geminiFxlSelect.appendChild(option);
       }
       for (const file of files) {
@@ -3715,9 +3713,7 @@
         option.textContent = [file.path, file.name].filter(Boolean).join(" / ");
         ui.geminiFxlSelect.appendChild(option);
       }
-      if (hadMultiple && files.some(f => f.id === previous)) ui.geminiFxlSelect.value = previous;
-      ui.geminiFxlStatus.textContent = files.length === 1 ? "Prosjektets kodeliste brukes automatisk."
-        : files.length ? "Flere kodelister funnet. Velg riktig FXL før nedlasting."
+      ui.geminiFxlStatus.textContent = files.length ? "Kodelisten med samme navn som i jobbens JXL velges ved eksport. Du kan også velge kodeliste manuelt."
         : "Last opp kodelisten (.fxl) til Connect-prosjektet og oppdater feltdata.";
     } catch (err) {
       state.geminiFxlError = err.message;
@@ -3733,10 +3729,19 @@
       setBusy(true);
       showHint(null, false);
       await ensureReady();
-      const fxl = state.geminiFxlFiles.find(f => f.id === ui.geminiFxlSelect.value);
-      if (!fxl) throw new Error(state.geminiFxlError || (state.geminiFxlFiles.length ? "Velg en FXL-kodeliste først." : "Last opp kodelisten (.fxl) til prosjektet og oppdater feltdata."));
       setStatus(`Klargjør JobXML zigzag: ${source.name}...`, "working");
       const prepared = await getSelectedJxlSourceText(source);
+      let fxl = state.geminiFxlFiles.find(f => f.id === ui.geminiFxlSelect.value);
+      if (!fxl) {
+        const reference = GeminiJxl.referencedFxl(prepared.text);
+        const matches = state.geminiFxlFiles.filter(f => String(f.name || "").trim().toLocaleLowerCase("nb") === reference.toLocaleLowerCase("nb"));
+        if (matches.length === 1) fxl = matches[0];
+        else if (matches.length > 1) throw new Error(`Flere filer heter «${reference}» i prosjektet. Velg riktig mappe og kodeliste manuelt.`);
+        else if (reference) throw new Error(`Jobben bruker «${reference}». Last opp denne FXL-filen til prosjektet og oppdater feltdata, eller velg kodeliste manuelt.`);
+        else if (state.geminiFxlFiles.length === 1) fxl = state.geminiFxlFiles[0];
+        else throw new Error(state.geminiFxlError || "JXL mangler henvisning til kodeliste. Velg en FXL-kodeliste manuelt.");
+      }
+      ui.geminiFxlStatus.textContent = `Bruker ${[fxl.path, fxl.name].filter(Boolean).join(" / ")}`;
       const response = await callProxy("downloadKofFile", {
         token: state.accessToken, projectId: state.project.id, projectLocation: state.project.location,
         fileId: fxl.id, fileName: fxl.name
