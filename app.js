@@ -7,7 +7,7 @@
     TOKEN_WAIT_MS: 30000,
     PROXY_URL: "/.netlify/functions/tc-proxy",
     APP_TITLE: "Geomatikksenter",
-    APP_BUILD: "20261116-multiple-fxl",
+    APP_BUILD: "20261117-session-refresh",
     JXL_ECEF_NN2000_GEOID_OFFSET_M: 40.3703,
     AUTO_CONVERT_ON_OPEN: false,
     IFC_POINT_OBJECT_HEIGHT_M: 1,
@@ -896,7 +896,15 @@
     }
   }
 
-  async function callProxy(action, payload) {
+  let tokenRenewal = null;
+
+  function hasUnauthorizedResponse(result) {
+    if (!result || typeof result !== "object") return false;
+    if (result.status === 401 || result.statusCode === 401 || result.errorcode === "INVALID_SESSION") return true;
+    return Object.values(result).some(value => value && typeof value === "object" && hasUnauthorizedResponse(value));
+  }
+
+  async function callProxy(action, payload, retried = false) {
     const res = await withTimeout(
       fetch(CONFIG.PROXY_URL, {
         method: "POST",
@@ -907,6 +915,21 @@
     );
     const text = await res.text();
     const json = safeJsonParse(text);
+    const unauthorized = res.status === 401 || hasUnauthorizedResponse(json);
+    // Only read operations are replayed. Uploads may already have side effects.
+    const canRetry = /^(list|get|download)/.test(action);
+    if (unauthorized && payload.token && canRetry) {
+      if (retried) throw new Error("Trimble Connect avviser fortsatt innloggingen. Last TC-fanen inn på nytt, eller logg ut og inn igjen.");
+      setStatus("Fornyer tilgangen til Trimble Connect...", "working");
+      if (state.accessToken === payload.token || !state.accessToken) {
+        if (!tokenRenewal) {
+          clearAccessToken();
+          tokenRenewal = requestAccessToken().finally(() => { tokenRenewal = null; });
+        }
+        await tokenRenewal;
+      }
+      return callProxy(action, { ...payload, token: state.accessToken }, true);
+    }
     return { ok: res.ok, status: res.status, text, json };
   }
 
@@ -4232,6 +4255,10 @@
 
   function onWorkspaceEvent(event, args) {
     debug("[TC EVENT]", event, args);
+    if (event === "extension.sessionInvalid") {
+      clearAccessToken();
+      return;
+    }
     if (event === "extension.accessToken") {
       const token = args?.data;
       if (typeof token === "string" && token && token !== "pending" && token !== "denied") {

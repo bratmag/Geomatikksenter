@@ -119,10 +119,11 @@ const testdata = path.join(fixtureRoot, 'Gemini-JXL-normalisering', 'testdata');
     const actions = [], errors = [];
     let files = [{ id: 'fxl-1', name: 'library.fxl', path: 'Kodelister' }];
     let sourceXml = interleaved;
+    let unauthorizedRemaining = 1;
     let sources = [{ id: 'job', name: 'Testjobb', sourceType: 'field-data', modifiedOn: '2026-11-04T10:00:00Z', job: { id: 'job', name: 'Testjobb' } }];
     await page.addInitScript(() => {
       window.TrimbleConnectWorkspace = { connect: async () => ({
-        extension: { requestPermission: async () => 'test-token', setStatusMessage: async () => {} },
+        extension: { requestPermission: async () => { window.permissionRequests = (window.permissionRequests || 0) + 1; return `test-token-${window.permissionRequests}`; }, setStatusMessage: async () => {} },
         project: { getCurrentProject: async () => ({ id: 'project', name: 'Test', location: 'europe' }) }
       }) };
     });
@@ -131,6 +132,10 @@ const testdata = path.join(fixtureRoot, 'Gemini-JXL-normalisering', 'testdata');
       const url = new URL(route.request().url());
       if (url.pathname === '/.netlify/functions/tc-proxy') {
         const body = route.request().postDataJSON(); actions.push(body);
+        if (body.action === 'listJxlSources' && unauthorizedRemaining > 0) {
+          unauthorizedRemaining--;
+          return route.fulfill({ json: { ok: false, sources: [], diagnostics: [{ status: 401, preview: 'Session Invalid' }] } });
+        }
         let result;
         if (body.action === 'listJxlSources') result = { ok: true, sources };
         else if (body.action === 'listProjectExplorer') result = { ok: true, files };
@@ -146,6 +151,9 @@ const testdata = path.join(fixtureRoot, 'Gemini-JXL-normalisering', 'testdata');
     await page.route('https://components.connect.trimble.com/**', route => route.fulfill({ body: '', contentType: 'text/javascript' }));
     await page.goto('http://geomatikksenter.test/');
     await page.waitForFunction(() => window.kof2txt && !kof2txt.state.busy && kof2txt.state.geminiFxlFiles.length === 1);
+    const initialRequests = actions.filter(a => a.action === 'listJxlSources');
+    assert.equal(initialRequests.length, 2);
+    assert.notEqual(initialRequests[0].token, initialRequests[1].token);
     await page.getByRole('button', { name: 'Feltdata', exact: true }).click();
     const button = page.getByRole('button', { name: 'JobXML zigzag', exact: true });
     assert.equal(await button.isEnabled(), true);
@@ -215,6 +223,12 @@ const testdata = path.join(fixtureRoot, 'Gemini-JXL-normalisering', 'testdata');
     assert.equal(await button.isDisabled(), true);
     await page.getByText('Last opp kodelisten (.fxl) til Connect-prosjektet og oppdater feltdata.', { exact: true }).waitFor();
     assert.deepEqual(errors, []);
+    unauthorizedRemaining = 5;
+    const attemptsBefore = actions.filter(a => a.action === 'listJxlSources').length;
+    await page.getByRole('button', { name: 'Oppdater feltdata', exact: true }).click();
+    await page.waitForFunction(() => !kof2txt.state.busy);
+    assert.equal(actions.filter(a => a.action === 'listJxlSources').length - attemptsBefore, 2);
+    assert.match(await page.locator('.status').textContent(), /avviser fortsatt innloggingen/);
     console.log('PASS UI: Field Data download, automatic/explicit/missing FXL, readable conflict, no upload');
   } finally { await browser.close(); }
 })().catch(e => { console.error(e); process.exitCode = 1; });
