@@ -7,7 +7,7 @@
     TOKEN_WAIT_MS: 30000,
     PROXY_URL: "/.netlify/functions/tc-proxy",
     APP_TITLE: "Geomatikksenter",
-    APP_BUILD: "20261117-session-refresh",
+    APP_BUILD: "20261118-zigzag-photos",
     JXL_ECEF_NN2000_GEOID_OFFSET_M: 40.3703,
     AUTO_CONVERT_ON_OPEN: false,
     IFC_POINT_OBJECT_HEIGHT_M: 1,
@@ -2488,6 +2488,41 @@
     return { photoImages, rootImages };
   }
 
+  async function buildZigzagDownload(jxlName, jxlText, assets) {
+    const name = basename(jxlName || "jobb.jxl");
+    const stem = name.replace(/\.(jxl|job)$/i, "");
+    const originalName = `${stem}.jxl`;
+    const filesFolder = `${stem} Files`;
+    const doc = new DOMParser().parseFromString(jxlText, "application/xml");
+    const paths = xmlElements(doc, "MediaFileRecord")
+      .map(record => jxlDirectText(record, "FileName").replace(/\\/g, "/"))
+      .filter(isImageFilename);
+    if (!paths.length && !assets.length) return { name: originalName, photos: 0 };
+
+    const entries = [{ path: originalName, data: new TextEncoder().encode(jxlText) }];
+    const imageEntries = new Map();
+    const usedAssets = new Set();
+    for (const path of paths) {
+      const parts = path.split("/");
+      if (parts.some(part => !part || part === "." || part === ".." || part.includes(":"))) {
+        throw new Error(`Bildestien «${path}» kan ikke pakkes i en ZIP.`);
+      }
+      const asset = findDeliveryAsset(assets, path);
+      if (!asset?.downloadUrl) throw new Error(`Bildet «${basename(path)}» mangler i Connect-vedleggene. Eksporten trenger bildefilene for å lage en komplett ZIP.`);
+      imageEntries.set(path.toLowerCase(), { path, asset });
+      usedAssets.add(asset);
+    }
+    for (const asset of assets) {
+      if (usedAssets.has(asset) || !asset.downloadUrl || !isImageFilename(asset.fileName)) continue;
+      const path = `${filesFolder}/${basename(asset.fileName)}`;
+      if (!imageEntries.has(path.toLowerCase())) imageEntries.set(path.toLowerCase(), { path, asset });
+    }
+    for (const { path, asset } of imageEntries.values()) {
+      entries.push({ path, data: await fetchDeliveryAssetBytes(asset) });
+    }
+    return { name: `${stem} - Zigzag.zip`, photos: imageEntries.size, blob: createZipBlob(entries) };
+  }
+
   function summarizeDeliveryAssets(jxlText, assets) {
     const manifest = getLedeDeliveryManifest(jxlText);
     return {
@@ -3779,9 +3814,13 @@
       const coordinates = await JobXmlCoordinates.prepare(prepared.text);
       const useSingle = manualFxl || !GeminiJxl.referencedFxls(prepared.text).length;
       const converted = GeminiJxl.convert(coordinates.text, useSingle ? Object.values(libraryTexts)[0] : libraryTexts);
-      const outName = String(prepared.jxlName || "jobb.jxl").replace(/\.(jxl|job)$/i, "") + " - Gemini.jxl";
-      triggerDownload(outName, converted.text);
-      setStatus(`Lastet ned ${outName}: ${converted.stats.lines} linjer, ${converted.stats.parts} delstrekninger.`, "success");
+      setStatus("Klargjør JXL og eventuelle bilder til nedlasting...", "working");
+      const download = await buildZigzagDownload(prepared.jxlName, converted.text, prepared.assets || []);
+      const outName = download.name;
+      if (download.blob) triggerBlobDownload(outName, download.blob);
+      else triggerDownload(outName, converted.text);
+      const photoStatus = download.photos ? `, ${download.photos} bilder` : "";
+      setStatus(`Lastet ned ${outName}: ${converted.stats.lines} linjer, ${converted.stats.parts} delstrekninger${photoStatus}.`, "success");
       setDebug({ action: "geminiDownload", source: source.id, fxl: selectedFxls.map(({ file }) => file.name), outName, stats: converted.stats, coordinates: { repaired: coordinates.repaired, model: coordinates.model || null, points: coordinates.points } });
     } catch (err) {
       setStatus(`JobXML zigzag: ${err.message || String(err)}`, "error");
